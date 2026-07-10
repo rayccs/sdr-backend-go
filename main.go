@@ -233,13 +233,15 @@ func main() {
 }
 
 func initDB() {
-	// Connection string apuntando al contenedor local
-	dsn := "host=127.0.0.1 user=postgres password=admin dbname=postgres port=5432 sslmode=disable TimeZone=UTC"
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "host=127.0.0.1 user=postgres password=admin dbname=postgres port=5432 sslmode=disable TimeZone=UTC"
+	}
 	
 	var err error
 	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		log.Fatalf("❌ Error conectando a PostgreSQL: %v\n(Asegúrate de que el contenedor Docker esté corriendo)", err)
+		log.Fatalf("❌ Error conectando a PostgreSQL: %v\n(Asegúrate de que la variable DATABASE_URL sea correcta)", err)
 	}
 
 	fmt.Println("✅ Conectado a PostgreSQL exitosamente.")
