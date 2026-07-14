@@ -226,8 +226,8 @@ func main() {
 		})
 	})
 
-	fmt.Printf("Servidor Backend de Go iniciado en http://127.0.0.1:%s\n", port)
-	if err := http.ListenAndServe("127.0.0.1:"+port, mux); err != nil {
+	fmt.Printf("Servidor Backend de Go iniciado en puerto %s\n", port)
+	if err := http.ListenAndServe("0.0.0.0:"+port, mux); err != nil {
 		log.Fatalf("Error al arrancar el servidor: %v", err)
 	}
 }
