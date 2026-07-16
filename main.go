@@ -38,6 +38,34 @@ type User struct {
 	LastLogin int64  // Unix timestamp
 }
 
+// CompanyConfig almacena el "Cerebro de Ventas" de cada cliente
+type CompanyConfig struct {
+	gorm.Model
+	CompanyID   string `gorm:"uniqueIndex"`
+	Name        string
+	ICP         string
+	ValueOffer  string
+	Prompt      string
+}
+
+// Lead representa un prospecto que escribe al WhatsApp
+type Lead struct {
+	gorm.Model
+	CompanyID   string
+	Phone       string
+	Status      string // "EN_CALIFICACION", "HANDOFF", "DESCALIFICADO", "CERRADO"
+	BantData    string // JSON con los datos extraídos
+	AssignedTo  string // ID del ejecutivo
+}
+
+// Conversation guarda el historial del chat para la IA
+type Conversation struct {
+	gorm.Model
+	LeadID      uint
+	Role        string // "user", "assistant"
+	Content     string
+}
+
 var DB *gorm.DB
 
 func main() {
@@ -247,7 +275,7 @@ func initDB() {
 	fmt.Println("✅ Conectado a PostgreSQL exitosamente.")
 
 	// Auto-Migrar las estructuras a PostgreSQL
-	err = DB.AutoMigrate(&TestUser{}, &User{})
+	err = DB.AutoMigrate(&TestUser{}, &User{}, &CompanyConfig{}, &Lead{}, &Conversation{})
 	if err != nil {
 		log.Printf("⚠️ Error migrando base de datos: %v", err)
 	} else {
