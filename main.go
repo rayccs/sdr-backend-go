@@ -657,10 +657,10 @@ func main() {
 				"message":    text,
 				"lead_phone": phone,
 				"company_config": Conf{
-					Icp:              config.Icp,
-					Offer:            config.Offer,
-					Services:         config.Services,
-					AdditionalPrompt: config.AdditionalPrompt,
+					Icp:              config.ICP,
+					Offer:            config.ValueOffer,
+					Services:         "Consultar según contexto",
+					AdditionalPrompt: config.Prompt,
 				},
 				"history": reqHistory,
 			}
