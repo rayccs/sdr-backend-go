@@ -134,10 +134,10 @@ func getCompanyID(r *http.Request) string {
 }
 
 // sendWhatsAppMessage manda un mensaje via Evolution API
-func sendWhatsAppMessage(phone, message string) error {
+func sendWhatsAppMessage(phone, message, instanceName string) error {
 	evolutionURL := os.Getenv("EVOLUTION_API_URL")
 	evolutionKey := os.Getenv("EVOLUTION_API_KEY")
-	instanceName := os.Getenv("EVOLUTION_INSTANCE_NAME")
+	
 	if evolutionURL == "" || evolutionKey == "" || instanceName == "" {
 		log.Println("WARN: Evolution API no configurada, omitiendo envío de WhatsApp")
 		return nil
@@ -539,7 +539,7 @@ func main() {
 		handoffMsg := strings.Join(briefLines, "\n")
 
 		// Enviar mensaje al KAM
-		if err := sendWhatsAppMessage(req.KamPhone, handoffMsg); err != nil {
+		if err := sendWhatsAppMessage(req.KamPhone, handoffMsg, "sdr-"+companyID); err != nil {
 			log.Printf("Error enviando handoff a KAM: %v", err)
 			// No falla el endpoint aunque el WhatsApp falle
 		}
@@ -550,84 +550,174 @@ func main() {
 		})
 	}))
 
-	// ── Webhook de N8N: recibe mensaje + score y crea/actualiza lead ─────────
-	// N8N llama a este endpoint después de que el Brain procesa el mensaje
-	mux.HandleFunc("/api/webhook/message", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	// Estructuras para parsear el webhook de Evolution
+	type EvolutionWebhook struct {
+		Event    string `json:"event"`
+		Instance string `json:"instance"`
+		Data     struct {
+			Key struct {
+				RemoteJid string `json:"remoteJid"`
+				FromMe    bool   `json:"fromMe"`
+				Id        string `json:"id"`
+			} `json:"key"`
+			PushName string `json:"pushName"`
+			Message  struct {
+				Conversation        string `json:"conversation"`
+				ExtendedTextMessage struct {
+					Text string `json:"text"`
+				} `json:"extendedTextMessage"`
+			} `json:"message"`
+		} `json:"data"`
+	}
+
+	// ── Webhook de Evolution API (Reemplaza a N8N) ─────────
+	mux.HandleFunc("/api/webhook/evolution", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
-			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 
-		var req struct {
-			Phone     string `json:"phone"`
-			Text      string `json:"text"`    // Mensaje del prospecto
-			Response  string `json:"response"` // Respuesta de la IA
-			BantScore int    `json:"bant_score"`
-			Status    string `json:"status"`
-			Pain      string `json:"pain"`
-			CompanyID string `json:"company_id"`
-			Name      string `json:"name"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			jsonErr(w, http.StatusBadRequest, "payload inválido")
+		var payload EvolutionWebhook
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusOK) // Return OK so Evolution doesn't retry infinitely
 			return
 		}
 
-		companyID := req.CompanyID
-		if companyID == "" {
+		if payload.Event != "messages.upsert" || payload.Data.Key.FromMe {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		text := payload.Data.Message.Conversation
+		if text == "" {
+			text = payload.Data.Message.ExtendedTextMessage.Text
+		}
+		if text == "" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		phone := strings.Split(payload.Data.Key.RemoteJid, "@")[0]
+		pushName := payload.Data.PushName
+		companyID := strings.TrimPrefix(payload.Instance, "sdr-")
+		if companyID == payload.Instance {
 			companyID = "default_company"
 		}
 
-		// Buscar o crear el lead
+		log.Printf("📥 WhatsApp recibido de %s: %s", phone, text)
+
 		var lead Lead
-		result := DB.Where("company_id = ? AND phone = ?", companyID, req.Phone).First(&lead)
-		if result.Error != nil {
-			// Crear nuevo lead
+		if err := DB.Where("company_id = ? AND phone = ?", companyID, phone).First(&lead).Error; err != nil {
 			lead = Lead{
 				CompanyID: companyID,
-				Phone:     req.Phone,
-				Name:      req.Name,
+				Phone:     phone,
+				Name:      pushName,
 				Source:    "WHATSAPP",
 				Status:    "EN_CALIFICACION",
-				BantScore: req.BantScore,
-				Pain:      req.Pain,
 			}
 			DB.Create(&lead)
-		} else {
-			// Actualizar score y status
-			updates := map[string]interface{}{"bant_score": req.BantScore}
-			if req.Status != "" {
-				updates["status"] = req.Status
-			}
-			if req.Pain != "" {
-				updates["pain"] = req.Pain
-			}
-			DB.Model(&lead).Updates(updates)
 		}
 
-		// Guardar mensajes en historial de conversación
-		if req.Text != "" {
-			DB.Create(&Conversation{
-				LeadID:    lead.ID,
-				CompanyID: companyID,
-				Role:      "user",
-				Content:   req.Text,
-			})
-		}
-		if req.Response != "" {
+		DB.Create(&Conversation{
+			LeadID:    lead.ID,
+			CompanyID: companyID,
+			Role:      "user",
+			Content:   text,
+		})
+
+		var config CompanyConfig
+		DB.Where("company_id = ?", companyID).First(&config)
+
+		var history []Conversation
+		DB.Where("lead_id = ?", lead.ID).Order("created_at asc").Find(&history)
+
+		go func() {
+			brainURL := os.Getenv("BRAIN_API_URL")
+			if brainURL == "" {
+				brainURL = "https://sdr-brain-python.onrender.com"
+			}
+
+			type Hist struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			}
+			type Conf struct {
+				Icp              string `json:"icp"`
+				Offer            string `json:"offer"`
+				Services         string `json:"services"`
+				AdditionalPrompt string `json:"additional_prompt"`
+			}
+
+			var reqHistory []Hist
+			for _, h := range history {
+				reqHistory = append(reqHistory, Hist{Role: h.Role, Content: h.Content})
+			}
+
+			reqBody := map[string]interface{}{
+				"message":    text,
+				"lead_phone": phone,
+				"company_config": Conf{
+					Icp:              config.Icp,
+					Offer:            config.Offer,
+					Services:         config.Services,
+					AdditionalPrompt: config.AdditionalPrompt,
+				},
+				"history": reqHistory,
+			}
+
+			jsonBody, _ := json.Marshal(reqBody)
+			resp, err := http.Post(brainURL+"/chat", "application/json", bytes.NewBuffer(jsonBody))
+			if err != nil {
+				log.Printf("❌ Error llamando al cerebro Python: %v", err)
+				return
+			}
+			defer resp.Body.Close()
+
+			var brainResp struct {
+				Response string `json:"response"`
+				Bant     struct {
+					Budget    string `json:"budget"`
+					Authority string `json:"authority"`
+					Need      string `json:"need"`
+					Timeline  string `json:"timeline"`
+					Score     int    `json:"score"`
+					Status    string `json:"status"`
+					Pain      string `json:"pain"`
+				} `json:"bant"`
+			}
+
+			if err := json.NewDecoder(resp.Body).Decode(&brainResp); err != nil {
+				log.Printf("❌ Error decodificando cerebro Python: %v", err)
+				return
+			}
+
 			DB.Create(&Conversation{
 				LeadID:    lead.ID,
 				CompanyID: companyID,
 				Role:      "assistant",
-				Content:   req.Response,
+				Content:   brainResp.Response,
 			})
-		}
 
-		jsonOK(w, map[string]interface{}{
-			"lead_id":    lead.ID,
-			"bant_score": lead.BantScore,
-			"status":     lead.Status,
-		})
+			updates := map[string]interface{}{
+				"bant_score": brainResp.Bant.Score,
+			}
+			if brainResp.Bant.Status != "" {
+				updates["status"] = brainResp.Bant.Status
+			}
+			if brainResp.Bant.Pain != "" {
+				updates["pain"] = brainResp.Bant.Pain
+			}
+			DB.Model(&lead).Updates(updates)
+
+			if err := sendWhatsAppMessage(phone, brainResp.Response, payload.Instance); err != nil {
+				log.Printf("❌ Error enviando a Evolution API: %v", err)
+			} else {
+				log.Printf("✅ Respuesta enviada a %s", phone)
+			}
+		}()
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status": "ok"}`))
 	}))
 
 	// ── WhatsApp Evolution API ────────────────────────────────────────────────
