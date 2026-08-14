@@ -149,9 +149,7 @@ func sendWhatsAppMessage(phone, message, instanceName string) error {
 	payload := map[string]interface{}{
 		"number":  cleanPhone + "@s.whatsapp.net",
 		"options": map[string]interface{}{"delay": 1200},
-		"textMessage": map[string]interface{}{
-			"text": message,
-		},
+		"text":    message,
 	}
 
 	body, _ := json.Marshal(payload)
