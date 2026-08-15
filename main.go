@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -568,6 +569,8 @@ func main() {
 		} `json:"data"`
 	}
 
+	var processedMsgIDs sync.Map
+
 	// ── Webhook de Evolution API (Reemplaza a N8N) ─────────
 	mux.HandleFunc("/api/webhook/evolution", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
@@ -581,9 +584,19 @@ func main() {
 			return
 		}
 
-		if payload.Event != "messages.upsert" || payload.Data.Key.FromMe {
+		evt := strings.ToLower(strings.ReplaceAll(payload.Event, "_", "."))
+		if (evt != "messages.upsert") || payload.Data.Key.FromMe {
 			w.WriteHeader(http.StatusOK)
 			return
+		}
+
+		msgID := payload.Data.Key.Id
+		if msgID != "" {
+			if _, loaded := processedMsgIDs.LoadOrStore(msgID, time.Now()); loaded {
+				log.Printf("⚠️ Webhook duplicado omitido para mensaje ID: %s", msgID)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 		}
 
 		text := payload.Data.Message.Conversation
@@ -727,6 +740,8 @@ func main() {
 		companyID := getCompanyID(r)
 		instanceName := "sdr-" + companyID
 
+		go ensureEvolutionWebhook(instanceName)
+
 		evolutionURL := os.Getenv("EVOLUTION_API_URL")
 		evolutionKey := os.Getenv("EVOLUTION_API_KEY")
 
@@ -781,6 +796,9 @@ func main() {
 	mux.HandleFunc("/api/whatsapp/status", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		companyID := getCompanyID(r)
 		instanceName := "sdr-" + companyID
+
+		go ensureEvolutionWebhook(instanceName)
+
 		evolutionURL := os.Getenv("EVOLUTION_API_URL")
 		evolutionKey := os.Getenv("EVOLUTION_API_KEY")
 
@@ -833,5 +851,29 @@ func initDB() {
 		log.Printf("⚠️ Error migrando BD: %v", err)
 	} else {
 		fmt.Println("✅ Tablas sincronizadas (v2).")
+	}
+}
+
+func ensureEvolutionWebhook(instanceName string) {
+	evolutionURL := os.Getenv("EVOLUTION_API_URL")
+	evolutionKey := os.Getenv("EVOLUTION_API_KEY")
+	if evolutionURL == "" || evolutionKey == "" {
+		return
+	}
+	webhookPayload := map[string]interface{}{
+		"webhook": map[string]interface{}{
+			"url":     "https://sdr-backend-go.onrender.com/api/webhook/evolution",
+			"enabled": true,
+			"events":  []string{"MESSAGES_UPSERT"},
+		},
+	}
+	body, _ := json.Marshal(webhookPayload)
+	req, _ := http.NewRequest("POST", evolutionURL+"/webhook/set/"+instanceName, bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", evolutionKey)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err == nil && resp != nil {
+		resp.Body.Close()
 	}
 }
