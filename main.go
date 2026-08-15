@@ -653,6 +653,7 @@ func main() {
 				Content string `json:"content"`
 			}
 			type Conf struct {
+				Name             string `json:"name"`
 				Icp              string `json:"icp"`
 				Offer            string `json:"offer"`
 				Services         string `json:"services"`
@@ -661,6 +662,10 @@ func main() {
 
 			var reqHistory []Hist
 			for _, h := range history {
+				// Sanitizar: omitir mensajes de prueba corruptos antiguos con saludos repetidos o corchetes
+				if strings.Contains(h.Content, "[Tu Nombre]") || strings.Count(h.Content, "¡Hola!") > 1 || len(h.Content) > 300 {
+					continue
+				}
 				reqHistory = append(reqHistory, Hist{Role: h.Role, Content: h.Content})
 			}
 
@@ -668,6 +673,7 @@ func main() {
 				"message":    text,
 				"lead_phone": phone,
 				"company_config": Conf{
+					Name:             config.Name,
 					Icp:              config.ICP,
 					Offer:            config.ValueOffer,
 					Services:         "Consultar según contexto",
