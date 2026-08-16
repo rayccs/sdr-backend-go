@@ -330,12 +330,26 @@ func main() {
 			// Filtros opcionales
 			statusFilter := r.URL.Query().Get("status")
 			var leads []Lead
-			query := DB.Where("company_id = ?", companyID).Order("created_at DESC")
+			query := DB.Where("company_id = ?", companyID).Order("updated_at DESC")
 			if statusFilter != "" && statusFilter != "TODOS" {
 				query = query.Where("status = ?", statusFilter)
 			}
 			query.Find(&leads)
-			jsonOK(w, leads)
+
+			// Deduplicar por número de teléfono
+			phoneMap := make(map[string]bool)
+			var uniqueLeads []Lead
+			for _, l := range leads {
+				if l.Phone != "" {
+					if !phoneMap[l.Phone] {
+						phoneMap[l.Phone] = true
+						uniqueLeads = append(uniqueLeads, l)
+					}
+				} else {
+					uniqueLeads = append(uniqueLeads, l)
+				}
+			}
+			jsonOK(w, uniqueLeads)
 
 		case "POST":
 			var lead Lead
@@ -375,7 +389,6 @@ func main() {
 
 	// Endpoint para un lead específico (por ID)
 	mux.HandleFunc("/api/leads/", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		// Extraer ID del path: /api/leads/123
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/leads/"), "/")
 		if len(parts) == 0 || parts[0] == "" {
 			jsonErr(w, http.StatusBadRequest, "ID requerido")
@@ -434,7 +447,12 @@ func main() {
 				return
 			}
 			var convs []Conversation
-			DB.Where("lead_id = ? AND company_id = ?", leadID, companyID).Order("created_at ASC").Find(&convs)
+			var lead Lead
+			if err := DB.Where("id = ? AND company_id = ?", leadID, companyID).First(&lead).Error; err == nil && lead.Phone != "" {
+				DB.Where("(lead_id = ? OR phone = ?) AND company_id = ?", leadID, lead.Phone, companyID).Order("created_at ASC").Find(&convs)
+			} else {
+				DB.Where("lead_id = ? AND company_id = ?", leadID, companyID).Order("created_at ASC").Find(&convs)
+			}
 			jsonOK(w, convs)
 
 		case "POST":
