@@ -128,7 +128,7 @@ func getCompanyID(r *http.Request) string {
 	if cid == "" {
 		cid = r.URL.Query().Get("company_id")
 	}
-	if cid == "" {
+	if cid == "" || strings.HasPrefix(cid, "company_") {
 		cid = "default_company"
 	}
 	return cid
