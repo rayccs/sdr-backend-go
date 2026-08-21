@@ -742,8 +742,10 @@ func main() {
 			if brainResp.Bant.Pain != "" {
 				updates["pain"] = brainResp.Bant.Pain
 			}
-			if brainResp.Bant.Name != "" && brainResp.Bant.Name != "Usuario desconocido" && brainResp.Bant.Name != "null" {
-				updates["name"] = brainResp.Bant.Name
+			if brainResp.Bant.Name != "" && brainResp.Bant.Name != "null" {
+				if brainResp.Bant.Name != "Usuario desconocido" || lead.Name == "Cp" || lead.Name == "" || lead.Name == "Usuario desconocido" {
+					updates["name"] = brainResp.Bant.Name
+				}
 			}
 			DB.Model(&lead).Updates(updates)
 
