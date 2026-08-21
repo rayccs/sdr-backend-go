@@ -640,7 +640,7 @@ func main() {
 			lead = Lead{
 				CompanyID: companyID,
 				Phone:     phone,
-				Name:      pushName,
+				Name:      "Usuario desconocido",
 				Source:    "WHATSAPP",
 				Status:    "EN_CALIFICACION",
 			}
@@ -718,6 +718,7 @@ func main() {
 					Score     int    `json:"score"`
 					Status    string `json:"status"`
 					Pain      string `json:"pain"`
+					Name      string `json:"name"`
 				} `json:"bant"`
 			}
 
@@ -741,6 +742,9 @@ func main() {
 			}
 			if brainResp.Bant.Pain != "" {
 				updates["pain"] = brainResp.Bant.Pain
+			}
+			if brainResp.Bant.Name != "" && brainResp.Bant.Name != "Usuario desconocido" && brainResp.Bant.Name != "null" {
+				updates["name"] = brainResp.Bant.Name
 			}
 			DB.Model(&lead).Updates(updates)
 
