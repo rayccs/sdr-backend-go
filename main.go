@@ -74,9 +74,9 @@ type Lead struct {
 	Role         string `json:"role"`
 	Status       string `json:"status"` // EN_CALIFICACION | POR_AGENDAR | HANDOFF | DESCALIFICADO | CERRADO | EN_SEGUIMIENTO
 	BantScore    int    `json:"bant_score"`
-	BantData     string `json:"bant_data"`   // JSON con Budget, Authority, Need, Timeline
-	Pain         string `json:"pain"`        // Dolor detectado por IA
-	Source       string `json:"source"`      // WHATSAPP | EMAIL | etc
+	BantData     string `json:"bant_data"`    // JSON con Budget, Authority, Need, Timeline
+	Pain         string `json:"pain"`         // Dolor detectado por IA
+	Source       string `json:"source"`       // WHATSAPP | EMAIL | etc
 	AssignedKam  string `json:"assigned_kam"` // Nombre del KAM asignado
 	EnrichedData string `json:"enriched_data"`
 }
@@ -86,7 +86,7 @@ type Conversation struct {
 	gorm.Model
 	LeadID    uint   `json:"lead_id"`
 	CompanyID string `json:"company_id"`
-	Role      string `json:"role"`    // "user" | "assistant"
+	Role      string `json:"role"` // "user" | "assistant"
 	Content   string `json:"content"`
 }
 
@@ -138,7 +138,7 @@ func getCompanyID(r *http.Request) string {
 func sendWhatsAppMessage(phone, message, instanceName string) error {
 	evolutionURL := os.Getenv("EVOLUTION_API_URL")
 	evolutionKey := os.Getenv("EVOLUTION_API_KEY")
-	
+
 	if evolutionURL == "" || evolutionKey == "" || instanceName == "" {
 		log.Println("WARN: Evolution API no configurada, omitiendo envío de WhatsApp")
 		return nil
@@ -447,12 +447,7 @@ func main() {
 				return
 			}
 			var convs []Conversation
-			var lead Lead
-			if err := DB.Where("id = ? AND company_id = ?", leadID, companyID).First(&lead).Error; err == nil && lead.Phone != "" {
-				DB.Where("(lead_id = ? OR phone = ?) AND company_id = ?", leadID, lead.Phone, companyID).Order("created_at ASC").Find(&convs)
-			} else {
-				DB.Where("lead_id = ? AND company_id = ?", leadID, companyID).Order("created_at ASC").Find(&convs)
-			}
+			DB.Where("lead_id = ? AND company_id = ?", leadID, companyID).Order("created_at ASC").Find(&convs)
 			jsonOK(w, convs)
 
 		case "POST":
@@ -505,8 +500,8 @@ func main() {
 		}
 
 		var req struct {
-			LeadID  uint   `json:"lead_id"`
-			KamName string `json:"kam_name"`
+			LeadID   uint   `json:"lead_id"`
+			KamName  string `json:"kam_name"`
 			KamPhone string `json:"kam_phone"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -627,6 +622,7 @@ func main() {
 		}
 
 		phone := strings.Split(payload.Data.Key.RemoteJid, "@")[0]
+		pushName := payload.Data.PushName
 		companyID := strings.TrimPrefix(payload.Instance, "sdr-")
 		if companyID == payload.Instance {
 			companyID = "default_company"
@@ -742,10 +738,8 @@ func main() {
 			if brainResp.Bant.Pain != "" {
 				updates["pain"] = brainResp.Bant.Pain
 			}
-			if brainResp.Bant.Name != "" && brainResp.Bant.Name != "null" {
-				if brainResp.Bant.Name != "Usuario desconocido" || lead.Name == "Cp" || lead.Name == "" || lead.Name == "Usuario desconocido" {
-					updates["name"] = brainResp.Bant.Name
-				}
+			if brainResp.Bant.Name != "" && brainResp.Bant.Name != "Usuario desconocido" {
+				updates["name"] = brainResp.Bant.Name
 			}
 			DB.Model(&lead).Updates(updates)
 
@@ -787,14 +781,14 @@ func main() {
 			"integration":  "WHATSAPP-BAILEYS",
 		}
 		body, _ := json.Marshal(payload)
-		
+
 		req, _ := http.NewRequest("POST", evolutionURL+"/instance/create", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("apikey", evolutionKey)
 
 		client := &http.Client{Timeout: 30 * time.Second}
 		resp, err := client.Do(req)
-		
+
 		if err != nil {
 			jsonErr(w, http.StatusInternalServerError, "Error conectando a Evolution API")
 			return
@@ -840,7 +834,7 @@ func main() {
 			return
 		}
 		defer resp.Body.Close()
-		
+
 		var data interface{}
 		json.NewDecoder(resp.Body).Decode(&data)
 		jsonOK(w, data)
