@@ -627,7 +627,6 @@ func main() {
 		}
 
 		phone := strings.Split(payload.Data.Key.RemoteJid, "@")[0]
-		pushName := payload.Data.PushName
 		companyID := strings.TrimPrefix(payload.Instance, "sdr-")
 		if companyID == payload.Instance {
 			companyID = "default_company"
