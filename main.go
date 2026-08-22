@@ -60,9 +60,10 @@ type CompanyConfig struct {
 	CompanyID  string `gorm:"uniqueIndex"`
 	Name       string
 	ICP        string
-	ValueOffer string
-	Prompt     string
-	AgentName  string
+	ValueOffer    string
+	Prompt        string
+	AgentName     string
+	KnowledgeBase string
 }
 
 // Lead representa un prospecto que escribe al WhatsApp
@@ -297,8 +298,9 @@ func main() {
 				Name       string `json:"name"`
 				ICP        string `json:"icp"`
 				ValueOffer string `json:"value_offer"`
-				Prompt     string `json:"prompt"`
-				AgentName  string `json:"agent_name"`
+				Prompt        string `json:"prompt"`
+				AgentName     string `json:"agent_name"`
+				KnowledgeBase string `json:"knowledge_base"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				jsonErr(w, http.StatusBadRequest, "payload inválido")
@@ -311,10 +313,10 @@ func main() {
 			var config CompanyConfig
 			result := DB.Where("company_id = ?", companyID).First(&config)
 			if result.Error != nil {
-				config = CompanyConfig{CompanyID: companyID, Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName}
+				config = CompanyConfig{CompanyID: companyID, Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase}
 				DB.Create(&config)
 			} else {
-				DB.Model(&config).Updates(CompanyConfig{Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName})
+				DB.Model(&config).Updates(CompanyConfig{Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase})
 			}
 			jsonOK(w, config)
 			return
@@ -673,6 +675,7 @@ func main() {
 				Services         string `json:"services"`
 				AdditionalPrompt string `json:"additional_prompt"`
 				AgentName        string `json:"agent_name"`
+				KnowledgeBase    string `json:"knowledge_base"`
 			}
 
 			var reqHistory []Hist
@@ -691,9 +694,10 @@ func main() {
 					Name:             config.Name,
 					Icp:              config.ICP,
 					Offer:            config.ValueOffer,
-					Services:         "Consultar según contexto",
+					Services:         "",
 					AdditionalPrompt: config.Prompt,
 					AgentName:        config.AgentName,
+					KnowledgeBase:    config.KnowledgeBase,
 				},
 				"history": reqHistory,
 			}
