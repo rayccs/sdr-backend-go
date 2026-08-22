@@ -713,14 +713,18 @@ func main() {
 			var brainResp struct {
 				Response string `json:"response"`
 				Bant     struct {
-					Budget    string `json:"budget"`
-					Authority string `json:"authority"`
-					Need      string `json:"need"`
-					Timeline  string `json:"timeline"`
-					Score     int    `json:"score"`
-					Status    string `json:"status"`
-					Pain      string `json:"pain"`
-					Name      string `json:"name"`
+					Budget     string `json:"budget"`
+					Authority  string `json:"authority"`
+					Need       string `json:"need"`
+					Timeline   string `json:"timeline"`
+					Score      int    `json:"score"`
+					Status     string `json:"status"`
+					Pain       string `json:"pain"`
+					Name       string `json:"name"`
+					Interest   string `json:"interest"`
+					Objections string `json:"objections"`
+					NextStep   string `json:"next_step"`
+					Strategy   string `json:"strategy"`
 				} `json:"bant"`
 			}
 
@@ -736,8 +740,16 @@ func main() {
 				Content:   brainResp.Response,
 			})
 
+			enrichedBytes, _ := json.Marshal(map[string]string{
+				"interest":   brainResp.Bant.Interest,
+				"objections": brainResp.Bant.Objections,
+				"next_step":  brainResp.Bant.NextStep,
+				"strategy":   brainResp.Bant.Strategy,
+			})
+
 			updates := map[string]interface{}{
-				"bant_score": brainResp.Bant.Score,
+				"bant_score":    brainResp.Bant.Score,
+				"enriched_data": string(enrichedBytes),
 			}
 			if brainResp.Bant.Status != "" {
 				updates["status"] = brainResp.Bant.Status
