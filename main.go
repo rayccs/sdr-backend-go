@@ -671,9 +671,9 @@ func main() {
 			type Conf struct {
 				Name             string `json:"name"`
 				Icp              string `json:"icp"`
-				Offer            string `json:"offer"`
+				ValueOffer       string `json:"value_offer"`
 				Services         string `json:"services"`
-				AdditionalPrompt string `json:"additional_prompt"`
+				Prompt           string `json:"prompt"`
 				AgentName        string `json:"agent_name"`
 				KnowledgeBase    string `json:"knowledge_base"`
 			}
@@ -693,9 +693,9 @@ func main() {
 				"company_config": Conf{
 					Name:             config.Name,
 					Icp:              config.ICP,
-					Offer:            config.ValueOffer,
-					Services:         "",
-					AdditionalPrompt: config.Prompt,
+					ValueOffer:       config.ValueOffer,
+					Services:         config.Prompt,
+					Prompt:           config.Prompt,
 					AgentName:        config.AgentName,
 					KnowledgeBase:    config.KnowledgeBase,
 				},
