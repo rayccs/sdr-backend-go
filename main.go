@@ -740,16 +740,11 @@ func main() {
 				Content:   brainResp.Response,
 			})
 
-			enrichedBytes, _ := json.Marshal(map[string]string{
-				"interest":   brainResp.Bant.Interest,
-				"objections": brainResp.Bant.Objections,
-				"next_step":  brainResp.Bant.NextStep,
-				"strategy":   brainResp.Bant.Strategy,
-			})
+			enrichedStr := fmt.Sprintf("Interés: %s | Estrategia: %s", brainResp.Bant.Interest, brainResp.Bant.Strategy)
 
 			updates := map[string]interface{}{
 				"bant_score":    brainResp.Bant.Score,
-				"enriched_data": string(enrichedBytes),
+				"enriched_data": enrichedStr,
 			}
 			if brainResp.Bant.Status != "" {
 				updates["status"] = brainResp.Bant.Status
