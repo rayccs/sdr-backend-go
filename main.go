@@ -102,6 +102,12 @@ type KAM struct {
 	Active    bool   `json:"active"`
 }
 
+// RawLog guarda payloads de webhook desconocidos para depuración
+type RawLog struct {
+	gorm.Model
+	Data string
+}
+
 var DB *gorm.DB
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
@@ -629,6 +635,10 @@ func main() {
 		if text == "" {
 			// Añadir un log para debuggear cuentas de WhatsApp Business
 			log.Printf("⚠️ Mensaje ignorado por texto vacío. RAW JSON: %s", string(bodyBytes))
+			
+			// Guardar el log crudo en la base de datos para inspeccionarlo
+			DB.Create(&RawLog{Data: string(bodyBytes)})
+			
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -891,6 +901,7 @@ func initDB() {
 		&Lead{},
 		&Conversation{},
 		&KAM{},
+		&RawLog{},
 	)
 	if err != nil {
 		log.Printf("⚠️ Error migrando BD: %v", err)
