@@ -595,9 +595,15 @@ func main() {
 			return
 		}
 
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		
 		var payload EvolutionWebhook
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			w.WriteHeader(http.StatusOK) // Return OK so Evolution doesn't retry infinitely
+		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 
@@ -622,7 +628,7 @@ func main() {
 		}
 		if text == "" {
 			// Añadir un log para debuggear cuentas de WhatsApp Business
-			log.Printf("⚠️ Mensaje ignorado por texto vacío. Evento de Business/Multimedia? Payload: %+v", payload.Data.Message)
+			log.Printf("⚠️ Mensaje ignorado por texto vacío. RAW JSON: %s", string(bodyBytes))
 			w.WriteHeader(http.StatusOK)
 			return
 		}
