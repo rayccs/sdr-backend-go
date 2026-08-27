@@ -621,6 +621,8 @@ func main() {
 			text = payload.Data.Message.ExtendedTextMessage.Text
 		}
 		if text == "" {
+			// Añadir un log para debuggear cuentas de WhatsApp Business
+			log.Printf("⚠️ Mensaje ignorado por texto vacío. Evento de Business/Multimedia? Payload: %+v", payload.Data.Message)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
