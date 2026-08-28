@@ -511,9 +511,11 @@ func main() {
 		}
 
 		var req struct {
-			LeadID   uint   `json:"lead_id"`
-			KamName  string `json:"kam_name"`
-			KamPhone string `json:"kam_phone"`
+			LeadID            uint   `json:"lead_id"`
+			KamName           string `json:"kam_name"`
+			KamPhone          string `json:"kam_phone"`
+			AIBrief           string `json:"ai_brief"`
+			RecommendedAction string `json:"recommended_action"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			jsonErr(w, http.StatusBadRequest, "payload inválido")
@@ -539,37 +541,53 @@ func main() {
 			"assigned_kam": req.KamName,
 		})
 
-		// Obtener las últimas conversaciones para el brief
-		var convs []Conversation
-		DB.Where("lead_id = ? AND company_id = ?", lead.ID, companyID).
-			Order("created_at DESC").Limit(6).Find(&convs)
+		// Extraer un teléfono formateado para el enlace de WhatsApp (solo números)
+		phoneNumbersOnly := strings.Map(func(r rune) rune {
+			if r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, lead.Phone)
 
 		// Construir el mensaje de handoff para el KAM
 		briefLines := []string{
-			fmt.Sprintf("🤖 *SDR Cognitivo — Nuevo Lead Listo para Cierre*"),
+			fmt.Sprintf("🤖 *SDR Cognitivo — Nuevo Lead Transferido*"),
 			fmt.Sprintf(""),
 			fmt.Sprintf("👤 *Lead:* %s", lead.Name),
 			fmt.Sprintf("🏢 *Empresa:* %s", lead.Company),
-			fmt.Sprintf("💼 *Rol:* %s", lead.Role),
 			fmt.Sprintf("📱 *Contacto:* %s", lead.Phone),
 			fmt.Sprintf("🎯 *Score BANT:* %d/100", lead.BantScore),
-			fmt.Sprintf("😣 *Dolor detectado:* %s", lead.Pain),
 			fmt.Sprintf(""),
-			fmt.Sprintf("💡 *Acción recomendada:* Contactar lo antes posible. El prospecto tiene alta intención de compra."),
+			fmt.Sprintf("🧠 *Brief de la IA:* %s", req.AIBrief),
+			fmt.Sprintf("💡 *Acción recomendada:* %s", req.RecommendedAction),
 			fmt.Sprintf(""),
-			fmt.Sprintf("🔗 Ver en plataforma: https://os.ingenylabs.com/marketing/sdr"),
+			fmt.Sprintf("🔗 *Iniciar Chat con el Lead:* https://wa.me/%s", phoneNumbersOnly),
+			fmt.Sprintf("🔗 *Ver en plataforma:* https://os.ingenylabs.com/marketing/sdr"),
 		}
-		handoffMsg := strings.Join(briefLines, "\n")
+		handoffMsgKam := strings.Join(briefLines, "\n")
 
 		// Enviar mensaje al KAM
-		if err := sendWhatsAppMessage(req.KamPhone, handoffMsg, "sdr-"+companyID); err != nil {
+		if err := sendWhatsAppMessage(req.KamPhone, handoffMsgKam, "sdr-"+companyID); err != nil {
 			log.Printf("Error enviando handoff a KAM: %v", err)
-			// No falla el endpoint aunque el WhatsApp falle
+		}
+
+		// Extraer teléfono del KAM para el enlace de WhatsApp (solo números)
+		kamPhoneNumbersOnly := strings.Map(func(r rune) rune {
+			if r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, req.KamPhone)
+
+		// Construir y enviar mensaje al Lead informando de la transferencia
+		handoffMsgLead := fmt.Sprintf("¡Excelente! Te transferiré con %s, nuestro especialista comercial.\n\nTe escribirá en breve, o si lo prefieres, puedes contactarle directamente haciendo click aquí: https://wa.me/%s", req.KamName, kamPhoneNumbersOnly)
+		if err := sendWhatsAppMessage(lead.Phone, handoffMsgLead, "sdr-"+companyID); err != nil {
+			log.Printf("Error notificando al Lead del handoff: %v", err)
 		}
 
 		jsonOK(w, map[string]interface{}{
 			"lead":    lead,
-			"message": "Handoff realizado y KAM notificado",
+			"message": "Handoff realizado. KAM y Lead notificados por WhatsApp.",
 		})
 	}))
 
