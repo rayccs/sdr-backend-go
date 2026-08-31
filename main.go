@@ -109,6 +109,15 @@ type RawLog struct {
 	Data string
 }
 
+// FileStore guarda los documentos subidos por el usuario (Catálogos, PDFs, etc)
+type FileStore struct {
+	ID          string `gorm:"primaryKey;type:uuid;default:gen_random_uuid()"`
+	CompanyID   string `json:"company_id"`
+	FileName    string `json:"file_name"`
+	ContentType string `json:"content_type"`
+	Data        []byte `json:"-"`
+}
+
 var DB *gorm.DB
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
@@ -203,6 +212,87 @@ func main() {
 			"version": "2.0.0",
 		})
 	}))
+
+	// ── File Uploads ────────────────────────────────────────────────────────
+	mux.HandleFunc("/api/upload", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		companyID := getCompanyID(r)
+		if companyID == "" {
+			jsonErr(w, http.StatusUnauthorized, "company_id requerido")
+			return
+		}
+
+		if r.Method != "POST" {
+			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+			return
+		}
+
+		err := r.ParseMultipartForm(50 << 20) // 50MB max
+		if err != nil {
+			jsonErr(w, http.StatusBadRequest, "archivo demasiado grande")
+			return
+		}
+
+		file, handler, err := r.FormFile("file")
+		if err != nil {
+			jsonErr(w, http.StatusBadRequest, "archivo no encontrado")
+			return
+		}
+		defer file.Close()
+
+		fileBytes, err := io.ReadAll(file)
+		if err != nil {
+			jsonErr(w, http.StatusInternalServerError, "error leyendo archivo")
+			return
+		}
+
+		fileRecord := FileStore{
+			CompanyID:   companyID,
+			FileName:    handler.Filename,
+			ContentType: handler.Header.Get("Content-Type"),
+			Data:        fileBytes,
+		}
+
+		if err := DB.Create(&fileRecord).Error; err != nil {
+			jsonErr(w, http.StatusInternalServerError, "error guardando archivo")
+			return
+		}
+
+		backendURL := os.Getenv("BACKEND_URL")
+		if backendURL == "" {
+			// fallback to typical production domain if var not set
+			backendURL = "https://sdr-backend-go.onrender.com"
+		}
+		
+		publicURL := fmt.Sprintf("%s/api/files/%s", backendURL, fileRecord.ID)
+
+		jsonOK(w, map[string]string{
+			"id":  fileRecord.ID,
+			"url": publicURL,
+		})
+	}))
+
+	mux.HandleFunc("/api/files/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		id := strings.TrimPrefix(r.URL.Path, "/api/files/")
+		if id == "" {
+			http.Error(w, "id requerido", http.StatusBadRequest)
+			return
+		}
+
+		var fileRecord FileStore
+		if err := DB.Where("id = ?", id).First(&fileRecord).Error; err != nil {
+			http.Error(w, "archivo no encontrado", http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", fileRecord.ContentType)
+		w.Write(fileRecord.Data)
+	})
 
 	mux.HandleFunc("/api/db-test", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		newUser := TestUser{Name: "Test", Email: "test@ingenylabs.com"}
@@ -921,6 +1011,7 @@ func initDB() {
 		&Conversation{},
 		&KAM{},
 		&RawLog{},
+		&FileStore{},
 	)
 	if err != nil {
 		log.Printf("⚠️ Error migrando BD: %v", err)
