@@ -837,6 +837,12 @@ func main() {
 			}
 			defer resp.Body.Close()
 
+			if resp.StatusCode != http.StatusOK {
+				bodyBytes, _ := io.ReadAll(resp.Body)
+				log.Printf("❌ API Python retornó error %d: %s", resp.StatusCode, string(bodyBytes))
+				return
+			}
+
 			var brainResp struct {
 				Response string `json:"response"`
 				Bant     struct {
