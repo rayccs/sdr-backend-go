@@ -188,7 +188,13 @@ func sendWhatsAppMessage(phone, message, instanceName string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	log.Printf("Evolution API response: %d", resp.StatusCode)
+	
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	log.Printf("Evolution API response: %d - %s", resp.StatusCode, string(bodyBytes))
+	
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("Evolution API error: %d %s", resp.StatusCode, string(bodyBytes))
+	}
 	return nil
 }
 
@@ -624,14 +630,6 @@ func main() {
 			jsonErr(w, http.StatusNotFound, "lead no encontrado")
 			return
 		}
-
-		// Actualizar lead con el KAM asignado
-		DB.Model(&lead).Updates(map[string]interface{}{
-			"status":       "HANDOFF",
-			"assigned_kam": req.KamName,
-		})
-
-		// Extraer un teléfono formateado para el enlace de WhatsApp (solo números)
 		phoneNumbersOnly := strings.Map(func(r rune) rune {
 			if r >= '0' && r <= '9' {
 				return r
@@ -659,6 +657,8 @@ func main() {
 		// Enviar mensaje al KAM
 		if err := sendWhatsAppMessage(req.KamPhone, handoffMsgKam, "sdr-"+companyID); err != nil {
 			log.Printf("Error enviando handoff a KAM: %v", err)
+			jsonErr(w, http.StatusInternalServerError, "No se pudo notificar al KAM por WhatsApp. Revisa el número.")
+			return
 		}
 
 		// Extraer teléfono del KAM para el enlace de WhatsApp (solo números)
@@ -673,6 +673,7 @@ func main() {
 		handoffMsgLead := fmt.Sprintf("¡Excelente! Te transferiré con %s, nuestro especialista comercial.\n\nTe escribirá en breve, o si lo prefieres, puedes contactarle directamente haciendo click aquí: https://wa.me/%s", req.KamName, kamPhoneNumbersOnly)
 		if err := sendWhatsAppMessage(lead.Phone, handoffMsgLead, "sdr-"+companyID); err != nil {
 			log.Printf("Error notificando al Lead del handoff: %v", err)
+			// No bloqueamos el éxito del KAM si falla el mensaje al Lead
 		}
 
 		jsonOK(w, map[string]interface{}{
@@ -702,6 +703,7 @@ func main() {
 	}
 
 	var processedMsgIDs sync.Map
+	var userLocks sync.Map // Control de concurrencia por usuario
 
 	// ── Webhook de Evolution API (Reemplaza a N8N) ─────────
 	mux.HandleFunc("/api/webhook/evolution", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
@@ -786,6 +788,12 @@ func main() {
 		DB.Where("lead_id = ?", lead.ID).Order("created_at asc").Find(&history)
 
 		go func() {
+			// Prevenir condición de carrera: procesar mensajes del mismo lead secuencialmente
+			lockObj, _ := userLocks.LoadOrStore(phone, &sync.Mutex{})
+			mu := lockObj.(*sync.Mutex)
+			mu.Lock()
+			defer mu.Unlock()
+
 			brainURL := os.Getenv("BRAIN_API_URL")
 			if brainURL == "" {
 				brainURL = "https://sdr-brain-python.onrender.com"
