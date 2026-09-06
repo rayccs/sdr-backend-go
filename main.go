@@ -53,6 +53,18 @@ type User struct {
 	Password  string
 	Provider  string
 	LastLogin int64
+	// Perfil
+	FirstName    string
+	LastName     string
+	Organization string
+	PhoneNumber  string
+	Address      string
+	State        string
+	ZipCode      string
+	Country      string
+	Language     string
+	Timezone     string
+	Currency     string
 }
 
 // CompanyConfig almacena el "Cerebro de Ventas" de cada cliente
@@ -993,6 +1005,91 @@ func main() {
 		var data interface{}
 		json.NewDecoder(resp.Body).Decode(&data)
 		jsonOK(w, data)
+	}))
+
+	mux.HandleFunc("/api/users/login", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+			return
+		}
+		var payload struct {
+			Email    string `json:"email"`
+			Name     string `json:"name"`
+			Provider string `json:"provider"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			jsonErr(w, http.StatusBadRequest, "Payload inválido")
+			return
+		}
+
+		var user User
+		result := DB.Where("email = ?", payload.Email).First(&user)
+		if result.Error != nil {
+			user = User{
+				Email:     payload.Email,
+				Name:      payload.Name,
+				Provider:  payload.Provider,
+				LastLogin: time.Now().Unix(),
+			}
+			DB.Create(&user)
+		} else {
+			user.LastLogin = time.Now().Unix()
+			DB.Save(&user)
+		}
+		jsonOK(w, user)
+	}))
+
+	mux.HandleFunc("/api/users/profile", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			email := r.URL.Query().Get("email")
+			if email == "" {
+				jsonErr(w, http.StatusBadRequest, "Falta email")
+				return
+			}
+			var user User
+			if err := DB.Where("email = ?", email).First(&user).Error; err != nil {
+				jsonErr(w, http.StatusNotFound, "Usuario no encontrado")
+				return
+			}
+			jsonOK(w, user)
+			return
+		}
+
+		if r.Method == "PUT" {
+			var payload User
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				jsonErr(w, http.StatusBadRequest, "Payload inválido")
+				return
+			}
+			if payload.Email == "" {
+				jsonErr(w, http.StatusBadRequest, "Email es requerido para actualizar")
+				return
+			}
+
+			var user User
+			if err := DB.Where("email = ?", payload.Email).First(&user).Error; err != nil {
+				jsonErr(w, http.StatusNotFound, "Usuario no encontrado")
+				return
+			}
+
+			user.FirstName = payload.FirstName
+			user.LastName = payload.LastName
+			user.Organization = payload.Organization
+			user.PhoneNumber = payload.PhoneNumber
+			user.Address = payload.Address
+			user.State = payload.State
+			user.ZipCode = payload.ZipCode
+			user.Country = payload.Country
+			user.Language = payload.Language
+			user.Timezone = payload.Timezone
+			user.Currency = payload.Currency
+
+			DB.Save(&user)
+			jsonOK(w, user)
+			return
+		}
+
+		jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
 	}))
 
 	fmt.Printf("✅ SDR Backend Go v2.0 iniciado en puerto %s\n", port)
