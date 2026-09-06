@@ -65,6 +65,7 @@ type User struct {
 	Language     string
 	Timezone     string
 	Currency     string
+	NotificationPrefs string `gorm:"type:text"`
 }
 
 // CompanyConfig almacena el "Cerebro de Ventas" de cada cliente
@@ -1052,8 +1053,29 @@ func main() {
 			user.Timezone = payload.Timezone
 			user.Currency = payload.Currency
 
+			if payload.NotificationPrefs != "" {
+				user.NotificationPrefs = payload.NotificationPrefs
+			}
+
 			DB.Save(&user)
 			jsonOK(w, user)
+			return
+		}
+
+		if r.Method == "DELETE" {
+			email := r.URL.Query().Get("email")
+			if email == "" {
+				jsonErr(w, http.StatusBadRequest, "Falta email para eliminar")
+				return
+			}
+			var user User
+			if err := DB.Where("email = ?", email).First(&user).Error; err != nil {
+				jsonErr(w, http.StatusNotFound, "Usuario no encontrado")
+				return
+			}
+			
+			DB.Delete(&user)
+			jsonOK(w, map[string]string{"message": "Cuenta eliminada"})
 			return
 		}
 
