@@ -1,4 +1,4 @@
-module github.com/rayccs/ingeny-backend
+module github.com/rayccs/nodepath-backend
 
 go 1.25.0
 

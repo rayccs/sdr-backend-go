@@ -314,7 +314,7 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/db-test", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		newUser := TestUser{Name: "Test", Email: "test@ingenylabs.com"}
+		newUser := TestUser{Name: "Test", Email: "test@nodepath.com"}
 		DB.Create(&newUser)
 		var count int64
 		DB.Model(&TestUser{}).Count(&count)
@@ -663,7 +663,7 @@ func main() {
 			fmt.Sprintf("💡 *Acción recomendada:* %s", req.RecommendedAction),
 			fmt.Sprintf(""),
 			fmt.Sprintf("🔗 *Iniciar Chat con el Lead:* https://wa.me/%s", phoneNumbersOnly),
-			fmt.Sprintf("🔗 *Ver en plataforma:* https://os.ingenylabs.com/marketing/sdr"),
+			fmt.Sprintf("🔗 *Ver en plataforma:* https://os.nodepath.com/marketing/sdr"),
 		}
 		handoffMsgKam := strings.Join(briefLines, "\n")
 
