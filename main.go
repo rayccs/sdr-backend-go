@@ -1007,38 +1007,6 @@ func main() {
 		jsonOK(w, data)
 	}))
 
-	mux.HandleFunc("/api/users/login", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
-			return
-		}
-		var payload struct {
-			Email    string `json:"email"`
-			Name     string `json:"name"`
-			Provider string `json:"provider"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			jsonErr(w, http.StatusBadRequest, "Payload inválido")
-			return
-		}
-
-		var user User
-		result := DB.Where("email = ?", payload.Email).First(&user)
-		if result.Error != nil {
-			user = User{
-				Email:     payload.Email,
-				Name:      payload.Name,
-				Provider:  payload.Provider,
-				LastLogin: time.Now().Unix(),
-			}
-			DB.Create(&user)
-		} else {
-			user.LastLogin = time.Now().Unix()
-			DB.Save(&user)
-		}
-		jsonOK(w, user)
-	}))
-
 	mux.HandleFunc("/api/users/profile", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			email := r.URL.Query().Get("email")
