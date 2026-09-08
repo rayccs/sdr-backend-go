@@ -71,13 +71,15 @@ type User struct {
 // CompanyConfig almacena el "Cerebro de Ventas" de cada cliente
 type CompanyConfig struct {
 	gorm.Model
-	CompanyID  string `gorm:"uniqueIndex"`
-	Name       string
-	ICP        string
+	CompanyID     string `gorm:"uniqueIndex"`
+	Name          string
+	ICP           string
 	ValueOffer    string
 	Prompt        string
 	AgentName     string
 	KnowledgeBase string
+	ApolloEnabled bool   `json:"apollo_enabled"`
+	ApolloAPIKey  string `json:"apollo_api_key"`
 }
 
 // Lead representa un prospecto que escribe al WhatsApp
@@ -410,13 +412,15 @@ func main() {
 
 		if r.Method == "POST" {
 			var req struct {
-				CompanyID  string `json:"company_id"`
-				Name       string `json:"name"`
-				ICP        string `json:"icp"`
-				ValueOffer string `json:"value_offer"`
+				CompanyID     string `json:"company_id"`
+				Name          string `json:"name"`
+				ICP           string `json:"icp"`
+				ValueOffer    string `json:"value_offer"`
 				Prompt        string `json:"prompt"`
 				AgentName     string `json:"agent_name"`
 				KnowledgeBase string `json:"knowledge_base"`
+				ApolloEnabled bool   `json:"apollo_enabled"`
+				ApolloAPIKey  string `json:"apollo_api_key"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				jsonErr(w, http.StatusBadRequest, "payload inválido")
@@ -429,10 +433,10 @@ func main() {
 			var config CompanyConfig
 			result := DB.Where("company_id = ?", companyID).First(&config)
 			if result.Error != nil {
-				config = CompanyConfig{CompanyID: companyID, Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase}
+				config = CompanyConfig{CompanyID: companyID, Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase, ApolloEnabled: req.ApolloEnabled, ApolloAPIKey: req.ApolloAPIKey}
 				DB.Create(&config)
 			} else {
-				DB.Model(&config).Updates(CompanyConfig{Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase})
+				DB.Model(&config).Updates(CompanyConfig{Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase, ApolloEnabled: req.ApolloEnabled, ApolloAPIKey: req.ApolloAPIKey})
 			}
 			jsonOK(w, config)
 			return
@@ -824,6 +828,8 @@ func main() {
 				Prompt           string `json:"prompt"`
 				AgentName        string `json:"agent_name"`
 				KnowledgeBase    string `json:"knowledge_base"`
+				ApolloEnabled    bool   `json:"apollo_enabled"`
+				ApolloAPIKey     string `json:"apollo_api_key"`
 			}
 
 			var reqHistory []Hist
@@ -846,6 +852,8 @@ func main() {
 					Prompt:           config.Prompt,
 					AgentName:        config.AgentName,
 					KnowledgeBase:    config.KnowledgeBase,
+					ApolloEnabled:    config.ApolloEnabled,
+					ApolloAPIKey:     config.ApolloAPIKey,
 				},
 				"history": reqHistory,
 			}
@@ -865,8 +873,9 @@ func main() {
 			}
 
 			var brainResp struct {
-				Response string `json:"response"`
-				Bant     struct {
+				Response       string `json:"response"`
+				ApolloInsights string `json:"apollo_insights"`
+				Bant           struct {
 					Budget     string `json:"budget"`
 					Authority  string `json:"authority"`
 					Need       string `json:"need"`
@@ -894,7 +903,17 @@ func main() {
 				Content:   brainResp.Response,
 			})
 
-			enrichedStr := fmt.Sprintf("Interés: %s | Estrategia: %s", brainResp.Bant.Interest, brainResp.Bant.Strategy)
+			enrichedMap := map[string]interface{}{
+				"interest":   brainResp.Bant.Interest,
+				"strategy":   brainResp.Bant.Strategy,
+				"objections": brainResp.Bant.Objections,
+				"next_step":  brainResp.Bant.NextStep,
+			}
+			if brainResp.ApolloInsights != "" {
+				enrichedMap["apollo_insights"] = brainResp.ApolloInsights
+			}
+			enrichedBytes, _ := json.Marshal(enrichedMap)
+			enrichedStr := string(enrichedBytes)
 
 			updates := map[string]interface{}{
 				"bant_score":    brainResp.Bant.Score,
