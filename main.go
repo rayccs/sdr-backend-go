@@ -53,6 +53,8 @@ type User struct {
 	Password  string
 	Provider  string
 	LastLogin int64
+	Role      string `gorm:"default:'ADMIN'"` // ADMIN | EXECUTIVE
+	CompanyID string // Para asociar ejecutivos a una empresa
 	// Perfil
 	FirstName    string
 	LastName     string
@@ -116,6 +118,7 @@ type KAM struct {
 	Role      string `json:"role"`
 	Phone     string `json:"phone"` // número WhatsApp con código de país
 	Active    bool   `json:"active"`
+	UserID    uint   `json:"user_id"` // ID del User para iniciar sesión
 }
 
 // RawLog guarda payloads de webhook desconocidos para depuración
@@ -1100,6 +1103,101 @@ func main() {
 
 		jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
 	}))
+
+	// ── Multi-Tenant / Inbox ──────────────────────────────────────────────────
+	mux.HandleFunc("/api/kams/register", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+			return
+		}
+		var req struct {
+			CompanyID string `json:"company_id"`
+			Name      string `json:"name"`
+			Email     string `json:"email"`
+			Password  string `json:"password"`
+			Role      string `json:"role"` // KAM profile role, e.g. "Account Executive"
+			Phone     string `json:"phone"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonErr(w, http.StatusBadRequest, "payload inválido")
+			return
+		}
+
+		hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		user := User{
+			Email:     req.Email,
+			Name:      req.Name,
+			Password:  string(hashed),
+			Role:      "EXECUTIVE",
+			CompanyID: req.CompanyID,
+		}
+		if err := DB.Create(&user).Error; err != nil {
+			jsonErr(w, http.StatusInternalServerError, "Error al crear usuario")
+			return
+		}
+
+		kam := KAM{
+			CompanyID: req.CompanyID,
+			Name:      req.Name,
+			Role:      req.Role,
+			Phone:     req.Phone,
+			Active:    true,
+			UserID:    user.ID,
+		}
+		if err := DB.Create(&kam).Error; err != nil {
+			jsonErr(w, http.StatusInternalServerError, "Error al crear perfil KAM")
+			return
+		}
+
+		jsonOK(w, kam)
+	}))
+
+	mux.HandleFunc("/api/kams/me/leads", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		kamName := r.URL.Query().Get("kam_name")
+		companyID := getCompanyID(r)
+		var leads []Lead
+		DB.Where("company_id = ? AND assigned_kam = ?", companyID, kamName).Find(&leads)
+		jsonOK(w, leads)
+	}))
+
+	mux.HandleFunc("/api/chat/send", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+			return
+		}
+		var req struct {
+			LeadID    uint   `json:"lead_id"`
+			Message   string `json:"message"`
+			CompanyID string `json:"company_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonErr(w, http.StatusBadRequest, "payload inválido")
+			return
+		}
+		
+		var lead Lead
+		if err := DB.First(&lead, req.LeadID).Error; err != nil {
+			jsonErr(w, http.StatusNotFound, "Lead no encontrado")
+			return
+		}
+
+		if lead.Status != "HANDOFF" {
+			DB.Model(&lead).Update("status", "HANDOFF")
+		}
+
+		msg := Conversation{
+			LeadID:    lead.ID,
+			CompanyID: req.CompanyID,
+			Role:      "assistant",
+			Content:   req.Message,
+		}
+		DB.Create(&msg)
+
+		sendWhatsAppMessage(lead.Phone, req.Message, req.CompanyID)
+
+		jsonOK(w, msg)
+	}))
+
 
 	fmt.Printf("✅ SDR Backend Go v2.0 iniciado en puerto %s\n", port)
 	if err := http.ListenAndServe("0.0.0.0:"+port, mux); err != nil {
