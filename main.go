@@ -1015,7 +1015,7 @@ func main() {
 		evolutionURL := os.Getenv("EVOLUTION_API_URL")
 		evolutionKey := os.Getenv("EVOLUTION_API_KEY")
 
-		req, _ := http.NewRequest("GET", evolutionURL+"/instance/connectionState/"+instanceName, nil)
+		req, _ := http.NewRequest("GET", evolutionURL+"/instance/fetchInstances?instanceName="+instanceName, nil)
 		req.Header.Set("apikey", evolutionKey)
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Do(req)
@@ -1025,9 +1025,37 @@ func main() {
 		}
 		defer resp.Body.Close()
 
-		var data interface{}
-		json.NewDecoder(resp.Body).Decode(&data)
-		jsonOK(w, data)
+		var instances []struct {
+			Name                    string  `json:"name"`
+			ConnectionStatus        string  `json:"connectionStatus"`
+			DisconnectionReasonCode *int    `json:"disconnectionReasonCode"`
+			DisconnectionAt         *string `json:"disconnectionAt"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&instances); err != nil || len(instances) == 0 {
+			jsonOK(w, map[string]interface{}{
+				"instance": map[string]interface{}{
+					"instanceName": instanceName,
+					"state":        "close",
+				},
+			})
+			return
+		}
+
+		inst := instances[0]
+		state := "close"
+		// La conexión es legítimamente activa solo si está open y sin registro de desconexión
+		if inst.ConnectionStatus == "open" && inst.DisconnectionReasonCode == nil && inst.DisconnectionAt == nil {
+			state = "open"
+		}
+
+		jsonOK(w, map[string]interface{}{
+			"instance": map[string]interface{}{
+				"instanceName":            instanceName,
+				"state":                   state,
+				"disconnectionReasonCode": inst.DisconnectionReasonCode,
+			},
+		})
 	}))
 
 	mux.HandleFunc("/api/users/profile", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
