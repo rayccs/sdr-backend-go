@@ -995,8 +995,35 @@ func main() {
 				return
 			}
 			defer resp2.Body.Close()
-			var data interface{}
+			var data map[string]interface{}
 			json.NewDecoder(resp2.Body).Decode(&data)
+
+			// Si no devuelve QR y afirma estar "open", verificar si es un estado zombi
+			if data != nil && data["base64"] == nil && data["qrcode"] == nil {
+				instMap, isMap := data["instance"].(map[string]interface{})
+				if data["state"] == "open" || (isMap && instMap["state"] == "open") {
+					checkReq, _ := http.NewRequest("GET", evolutionURL+"/instance/fetchInstances?instanceName="+instanceName, nil)
+					checkReq.Header.Set("apikey", evolutionKey)
+					checkResp, checkErr := client.Do(checkReq)
+					if checkErr == nil {
+						defer checkResp.Body.Close()
+						var instances []struct {
+							ConnectionStatus        string  `json:"connectionStatus"`
+							DisconnectionReasonCode *int    `json:"disconnectionReasonCode"`
+							DisconnectionAt         *string `json:"disconnectionAt"`
+						}
+						if json.NewDecoder(checkResp.Body).Decode(&instances) == nil && len(instances) > 0 {
+							if instances[0].DisconnectionReasonCode != nil || instances[0].DisconnectionAt != nil {
+								if isMap {
+									instMap["state"] = "close"
+								}
+								data["state"] = "close"
+							}
+						}
+					}
+				}
+			}
+
 			jsonOK(w, data)
 			return
 		}
