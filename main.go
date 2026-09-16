@@ -1042,7 +1042,7 @@ func main() {
 		evolutionURL := os.Getenv("EVOLUTION_API_URL")
 		evolutionKey := os.Getenv("EVOLUTION_API_KEY")
 
-		req, _ := http.NewRequest("GET", evolutionURL+"/instance/fetchInstances?instanceName="+instanceName, nil)
+		req, _ := http.NewRequest("GET", evolutionURL+"/instance/connectionState/"+instanceName, nil)
 		req.Header.Set("apikey", evolutionKey)
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Do(req)
@@ -1052,14 +1052,13 @@ func main() {
 		}
 		defer resp.Body.Close()
 
-		var instances []struct {
-			Name                    string  `json:"name"`
-			ConnectionStatus        string  `json:"connectionStatus"`
-			DisconnectionReasonCode *int    `json:"disconnectionReasonCode"`
-			DisconnectionAt         *string `json:"disconnectionAt"`
+		var stateData struct {
+			Instance struct {
+				State string `json:"state"`
+			} `json:"instance"`
 		}
 
-		if err := json.NewDecoder(resp.Body).Decode(&instances); err != nil || len(instances) == 0 {
+		if err := json.NewDecoder(resp.Body).Decode(&stateData); err != nil || stateData.Instance.State == "" {
 			jsonOK(w, map[string]interface{}{
 				"instance": map[string]interface{}{
 					"instanceName": instanceName,
@@ -1069,18 +1068,10 @@ func main() {
 			return
 		}
 
-		inst := instances[0]
-		state := "close"
-		// La conexión es legítimamente activa solo si está open y sin registro de desconexión
-		if inst.ConnectionStatus == "open" && inst.DisconnectionReasonCode == nil && inst.DisconnectionAt == nil {
-			state = "open"
-		}
-
 		jsonOK(w, map[string]interface{}{
 			"instance": map[string]interface{}{
-				"instanceName":            instanceName,
-				"state":                   state,
-				"disconnectionReasonCode": inst.DisconnectionReasonCode,
+				"instanceName": instanceName,
+				"state":        stateData.Instance.State,
 			},
 		})
 	}))
