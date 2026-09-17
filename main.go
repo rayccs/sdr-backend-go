@@ -1282,6 +1282,15 @@ func initDB() {
 	} else {
 		fmt.Println("✅ Tablas sincronizadas (v2).")
 	}
+
+	// Limitar el pool de conexiones para evitar agotar las 15 sesiones de Supabase
+	// Si se excede el límite, Supavisor pone en cola las peticiones, causando latencias extremas (ej. 3 minutos)
+	sqlDB, err := DB.DB()
+	if err == nil {
+		sqlDB.SetMaxOpenConns(5)
+		sqlDB.SetMaxIdleConns(1)
+		sqlDB.SetConnMaxLifetime(10 * time.Minute)
+	}
 }
 
 func ensureEvolutionWebhook(instanceName string) {
