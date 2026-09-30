@@ -1086,6 +1086,36 @@ func main() {
 		jsonOK(w, data)
 	}))
 
+	mux.HandleFunc("/api/whatsapp/disconnect", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" {
+			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+			return
+		}
+		companyID := getCompanyID(r)
+		instanceName := "sdr-" + companyID
+
+		evolutionURL := os.Getenv("EVOLUTION_API_URL")
+		evolutionKey := os.Getenv("EVOLUTION_API_KEY")
+
+		if evolutionURL == "" || evolutionKey == "" {
+			jsonErr(w, http.StatusInternalServerError, "Evolution API no configurada en el backend")
+			return
+		}
+
+		// 1. Logout first to ensure phone disconnects
+		reqLogout, _ := http.NewRequest("DELETE", evolutionURL+"/instance/logout/"+instanceName, nil)
+		reqLogout.Header.Set("apikey", evolutionKey)
+		client := &http.Client{Timeout: 10 * time.Second}
+		client.Do(reqLogout)
+
+		// 2. Delete the instance completely to force a clean QR next time
+		reqDelete, _ := http.NewRequest("DELETE", evolutionURL+"/instance/delete/"+instanceName, nil)
+		reqDelete.Header.Set("apikey", evolutionKey)
+		client.Do(reqDelete)
+
+		jsonOK(w, map[string]string{"message": "WhatsApp desvinculado exitosamente"})
+	}))
+
 	mux.HandleFunc("/api/whatsapp/status", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		companyID := getCompanyID(r)
 		instanceName := "sdr-" + companyID
@@ -1121,10 +1151,33 @@ func main() {
 			return
 		}
 
+		// Si está open, intentamos buscar el número de teléfono conectado
+		ownerNumber := ""
+		if stateData.Instance.State == "open" {
+			reqFetch, _ := http.NewRequest("GET", evolutionURL+"/instance/fetchInstances?instanceName="+instanceName, nil)
+			reqFetch.Header.Set("apikey", evolutionKey)
+			if respFetch, errFetch := client.Do(reqFetch); errFetch == nil {
+				defer respFetch.Body.Close()
+				var fetchResult []struct {
+					Instance struct {
+						InstanceName string `json:"instanceName"`
+					} `json:"instance"`
+					Owner       string `json:"owner"`
+					ProfileName string `json:"profileName"`
+				}
+				if json.NewDecoder(respFetch.Body).Decode(&fetchResult) == nil && len(fetchResult) > 0 {
+					if fetchResult[0].Owner != "" {
+						ownerNumber = strings.Split(fetchResult[0].Owner, "@")[0]
+					}
+				}
+			}
+		}
+
 		jsonOK(w, map[string]interface{}{
 			"instance": map[string]interface{}{
 				"instanceName": instanceName,
 				"state":        stateData.Instance.State,
+				"owner":        ownerNumber,
 			},
 		})
 	}))
