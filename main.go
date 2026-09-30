@@ -903,7 +903,7 @@ func main() {
 				confMap.GoogleAccessToken = adminUser.GoogleAccessToken
 				confMap.GoogleRefreshToken = adminUser.GoogleRefreshToken
 				reqBody["company_config"] = confMap
-			} else if err := DB.Where("email = ? AND google_access_token != ''", companyID).First(&adminUser).Error; err == nil {
+			} else if err := DB.Where("REPLACE(REPLACE(email, '@', '-'), '.', '-') = ? AND google_access_token != ''", companyID).First(&adminUser).Error; err == nil {
 				// Fallback por si companyID es el email del usuario
 				confMap := reqBody["company_config"].(Conf)
 				confMap.GoogleAccessToken = adminUser.GoogleAccessToken
