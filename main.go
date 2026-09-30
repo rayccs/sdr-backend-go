@@ -68,6 +68,8 @@ type User struct {
 	Timezone     string
 	Currency     string
 	NotificationPrefs string `gorm:"type:text"`
+	GoogleAccessToken  string
+	GoogleRefreshToken string
 }
 
 // CompanyConfig almacena el "Cerebro de Ventas" de cada cliente
@@ -82,6 +84,7 @@ type CompanyConfig struct {
 	KnowledgeBase string
 	ApolloEnabled bool   `json:"apollo_enabled"`
 	ApolloAPIKey  string `json:"apollo_api_key"`
+	AutoScheduleEnabled bool `json:"auto_schedule_enabled"`
 }
 
 // Lead representa un prospecto que escribe al WhatsApp
@@ -99,6 +102,7 @@ type Lead struct {
 	Source       string `json:"source"`       // WHATSAPP | EMAIL | etc
 	AssignedKam  string `json:"assigned_kam"` // Nombre del KAM asignado
 	EnrichedData string `json:"enriched_data"`
+	TokensUsed   int    `json:"tokens_used"`
 }
 
 // Conversation guarda el historial del chat para la IA
@@ -108,6 +112,7 @@ type Conversation struct {
 	CompanyID string `json:"company_id"`
 	Role      string `json:"role"` // "user" | "assistant"
 	Content   string `json:"content"`
+	TokensUsed int   `json:"tokens_used"`
 }
 
 // KAM representa un ejecutivo de ventas del cliente
@@ -353,11 +358,13 @@ func main() {
 			return
 		}
 		var req struct {
-			Email    string `json:"email"`
-			Password string `json:"password"`
-			Name     string `json:"name"`
-			Provider string `json:"provider"`
-			CfToken  string `json:"cf_token"`
+			Email        string `json:"email"`
+			Password     string `json:"password"`
+			Name         string `json:"name"`
+			Provider     string `json:"provider"`
+			CfToken      string `json:"cf_token"`
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			jsonErr(w, http.StatusBadRequest, "payload inválido")
@@ -375,7 +382,14 @@ func main() {
 		result := DB.Where("email = ?", req.Email).First(&user)
 		now := time.Now().Unix()
 		if result.Error != nil {
-			newUser := User{Email: req.Email, Name: req.Name, Provider: req.Provider, LastLogin: now}
+			newUser := User{
+				Email: req.Email, 
+				Name: req.Name, 
+				Provider: req.Provider, 
+				LastLogin: now,
+				GoogleAccessToken: req.AccessToken,
+				GoogleRefreshToken: req.RefreshToken,
+			}
 			if req.Provider != "Google" && req.Password != "" {
 				hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 				newUser.Password = string(hashed)
@@ -393,7 +407,15 @@ func main() {
 					return
 				}
 			}
-			DB.Model(&user).Updates(User{LastLogin: now, Name: req.Name})
+			
+			updates := User{LastLogin: now, Name: req.Name}
+			if req.AccessToken != "" {
+				updates.GoogleAccessToken = req.AccessToken
+			}
+			if req.RefreshToken != "" {
+				updates.GoogleRefreshToken = req.RefreshToken
+			}
+			DB.Model(&user).Updates(updates)
 		}
 		jsonOK(w, user)
 	}))
@@ -424,6 +446,7 @@ func main() {
 				KnowledgeBase string `json:"knowledge_base"`
 				ApolloEnabled bool   `json:"apollo_enabled"`
 				ApolloAPIKey  string `json:"apollo_api_key"`
+				AutoScheduleEnabled bool `json:"auto_schedule_enabled"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				jsonErr(w, http.StatusBadRequest, "payload inválido")
@@ -436,10 +459,10 @@ func main() {
 			var config CompanyConfig
 			result := DB.Where("company_id = ?", companyID).First(&config)
 			if result.Error != nil {
-				config = CompanyConfig{CompanyID: companyID, Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase, ApolloEnabled: req.ApolloEnabled, ApolloAPIKey: req.ApolloAPIKey}
+				config = CompanyConfig{CompanyID: companyID, Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase, ApolloEnabled: req.ApolloEnabled, ApolloAPIKey: req.ApolloAPIKey, AutoScheduleEnabled: req.AutoScheduleEnabled}
 				DB.Create(&config)
 			} else {
-				DB.Model(&config).Updates(CompanyConfig{Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase, ApolloEnabled: req.ApolloEnabled, ApolloAPIKey: req.ApolloAPIKey})
+				DB.Model(&config).Updates(CompanyConfig{Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase, ApolloEnabled: req.ApolloEnabled, ApolloAPIKey: req.ApolloAPIKey, AutoScheduleEnabled: req.AutoScheduleEnabled})
 			}
 			jsonOK(w, config)
 			return
@@ -696,6 +719,12 @@ func main() {
 			// No bloqueamos el éxito del KAM si falla el mensaje al Lead
 		}
 
+		// Actualizar el estado del lead en la base de datos
+		DB.Model(&lead).Updates(map[string]interface{}{
+			"status":       "HANDOFF",
+			"assigned_kam": req.KamName,
+		})
+
 		jsonOK(w, map[string]interface{}{
 			"lead":    lead,
 			"message": "Handoff realizado. KAM y Lead notificados por WhatsApp.",
@@ -833,6 +862,9 @@ func main() {
 				KnowledgeBase    string `json:"knowledge_base"`
 				ApolloEnabled    bool   `json:"apollo_enabled"`
 				ApolloAPIKey     string `json:"apollo_api_key"`
+				AutoScheduleEnabled bool `json:"auto_schedule_enabled"`
+				GoogleAccessToken   string `json:"google_access_token"`
+				GoogleRefreshToken  string `json:"google_refresh_token"`
 			}
 
 			var reqHistory []Hist
@@ -857,8 +889,26 @@ func main() {
 					KnowledgeBase:    config.KnowledgeBase,
 					ApolloEnabled:    config.ApolloEnabled,
 					ApolloAPIKey:     config.ApolloAPIKey,
+					AutoScheduleEnabled: config.AutoScheduleEnabled,
+					GoogleAccessToken:   "", // Se llena abajo
+					GoogleRefreshToken:  "", // Se llena abajo
 				},
 				"history": reqHistory,
+			}
+
+			// Intentar obtener los tokens de Google del admin de la empresa
+			var adminUser User
+			if err := DB.Where("company_id = ? AND role = 'ADMIN' AND google_access_token != ''", companyID).First(&adminUser).Error; err == nil {
+				confMap := reqBody["company_config"].(Conf)
+				confMap.GoogleAccessToken = adminUser.GoogleAccessToken
+				confMap.GoogleRefreshToken = adminUser.GoogleRefreshToken
+				reqBody["company_config"] = confMap
+			} else if err := DB.Where("email = ? AND google_access_token != ''", companyID).First(&adminUser).Error; err == nil {
+				// Fallback por si companyID es el email del usuario
+				confMap := reqBody["company_config"].(Conf)
+				confMap.GoogleAccessToken = adminUser.GoogleAccessToken
+				confMap.GoogleRefreshToken = adminUser.GoogleRefreshToken
+				reqBody["company_config"] = confMap
 			}
 
 			jsonBody, _ := json.Marshal(reqBody)
@@ -892,6 +942,7 @@ func main() {
 					NextStep   string `json:"next_step"`
 					Strategy   string `json:"strategy"`
 				} `json:"bant"`
+				TokensUsed     int    `json:"tokens_used"`
 			}
 
 			if err := json.NewDecoder(resp.Body).Decode(&brainResp); err != nil {
@@ -904,6 +955,7 @@ func main() {
 				CompanyID: companyID,
 				Role:      "assistant",
 				Content:   brainResp.Response,
+				TokensUsed: brainResp.TokensUsed,
 			})
 
 			enrichedMap := map[string]interface{}{
@@ -921,6 +973,7 @@ func main() {
 			updates := map[string]interface{}{
 				"bant_score":    brainResp.Bant.Score,
 				"enriched_data": enrichedStr,
+				"tokens_used":   gorm.Expr("tokens_used + ?", brainResp.TokensUsed),
 			}
 			if brainResp.Bant.Status != "" {
 				updates["status"] = brainResp.Bant.Status
