@@ -1194,6 +1194,8 @@ func main() {
 
 		// Si está open, intentamos buscar el número de teléfono conectado
 		ownerNumber := ""
+		profileName := ""
+		profilePicUrl := ""
 		if stateData.Instance.State == "open" {
 			reqFetch, _ := http.NewRequest("GET", evolutionURL+"/instance/fetchInstances?instanceName="+instanceName, nil)
 			reqFetch.Header.Set("apikey", evolutionKey)
@@ -1203,12 +1205,30 @@ func main() {
 					Instance struct {
 						InstanceName string `json:"instanceName"`
 					} `json:"instance"`
-					Owner       string `json:"owner"`
-					ProfileName string `json:"profileName"`
+					Owner           string `json:"owner"`
+					ProfileName     string `json:"profileName"`
+					ProfilePicUrl   string `json:"profilePicUrl"`
 				}
 				if json.NewDecoder(respFetch.Body).Decode(&fetchResult) == nil && len(fetchResult) > 0 {
 					if fetchResult[0].Owner != "" {
 						ownerNumber = strings.Split(fetchResult[0].Owner, "@")[0]
+					}
+					profileName = fetchResult[0].ProfileName
+					profilePicUrl = fetchResult[0].ProfilePicUrl
+				}
+			}
+			
+			// Si no vino la foto, intentamos obtenerla explícitamente
+			if ownerNumber != "" && profilePicUrl == "" {
+				reqPic, _ := http.NewRequest("GET", evolutionURL+"/chat/fetchProfilePictureUrl/"+instanceName+"?number="+ownerNumber, nil)
+				reqPic.Header.Set("apikey", evolutionKey)
+				if respPic, errPic := client.Do(reqPic); errPic == nil {
+					defer respPic.Body.Close()
+					var picResult struct {
+						ProfilePictureUrl string `json:"profilePictureUrl"`
+					}
+					if json.NewDecoder(respPic.Body).Decode(&picResult) == nil {
+						profilePicUrl = picResult.ProfilePictureUrl
 					}
 				}
 			}
@@ -1216,9 +1236,12 @@ func main() {
 
 		jsonOK(w, map[string]interface{}{
 			"instance": map[string]interface{}{
-				"instanceName": instanceName,
-				"state":        stateData.Instance.State,
-				"owner":        ownerNumber,
+				"instanceName":  instanceName,
+				"state":         stateData.Instance.State,
+				"owner":         ownerNumber,
+				"profileName":   profileName,
+				"profilePicUrl": profilePicUrl,
+				"isBusiness":    true, // Asumimos business o dejamos al cliente que lo evalúe
 			},
 		})
 	}))
