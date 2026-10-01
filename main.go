@@ -580,6 +580,47 @@ func main() {
 		}
 	}))
 
+	// Endpoint para eliminar todos los leads (y sus conversaciones en cascada)
+	mux.HandleFunc("/api/leads/all", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" {
+			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+			return
+		}
+		companyID := getCompanyID(r)
+		
+		// Start a transaction just in case
+		tx := DB.Begin()
+		if err := tx.Where("company_id = ?", companyID).Delete(&Conversation{}).Error; err != nil {
+			tx.Rollback()
+			jsonErr(w, http.StatusInternalServerError, "Error eliminando conversaciones")
+			return
+		}
+		if err := tx.Where("company_id = ?", companyID).Delete(&Lead{}).Error; err != nil {
+			tx.Rollback()
+			jsonErr(w, http.StatusInternalServerError, "Error eliminando leads")
+			return
+		}
+		tx.Commit()
+		
+		jsonOK(w, map[string]string{"message": "Todos los leads y conversaciones han sido eliminados"})
+	}))
+
+	// Endpoint para limpiar la base de datos de ingesta (FileStore)
+	mux.HandleFunc("/api/ingest/all", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" {
+			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+			return
+		}
+		companyID := getCompanyID(r)
+		
+		if err := DB.Where("company_id = ?", companyID).Delete(&FileStore{}).Error; err != nil {
+			jsonErr(w, http.StatusInternalServerError, "Error eliminando ingesta")
+			return
+		}
+		
+		jsonOK(w, map[string]string{"message": "Base de datos de ingesta eliminada correctamente"})
+	}))
+
 	// ── Conversations ────────────────────────────────────────────────────────
 	mux.HandleFunc("/api/conversations", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		companyID := getCompanyID(r)
