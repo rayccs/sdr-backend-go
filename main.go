@@ -1203,18 +1203,50 @@ func main() {
 				defer respFetch.Body.Close()
 				var fetchResult []struct {
 					Instance struct {
-						InstanceName string `json:"instanceName"`
+						InstanceName      string `json:"instanceName"`
+						Owner             string `json:"owner"`
+						Number            string `json:"number"`
+						ProfileName       string `json:"profileName"`
+						ProfilePictureUrl string `json:"profilePictureUrl"`
+						ProfilePicUrl     string `json:"profilePicUrl"`
 					} `json:"instance"`
-					Owner           string `json:"owner"`
-					ProfileName     string `json:"profileName"`
-					ProfilePicUrl   string `json:"profilePicUrl"`
+					Owner             string `json:"owner"`
+					Number            string `json:"number"`
+					ProfileName       string `json:"profileName"`
+					ProfilePictureUrl string `json:"profilePictureUrl"`
+					ProfilePicUrl     string `json:"profilePicUrl"`
 				}
 				if json.NewDecoder(respFetch.Body).Decode(&fetchResult) == nil && len(fetchResult) > 0 {
-					if fetchResult[0].Owner != "" {
-						ownerNumber = strings.Split(fetchResult[0].Owner, "@")[0]
+					// Check root first
+					owner := fetchResult[0].Owner
+					if owner == "" {
+						owner = fetchResult[0].Instance.Owner
 					}
+					if owner == "" {
+						owner = fetchResult[0].Number
+					}
+					if owner == "" {
+						owner = fetchResult[0].Instance.Number
+					}
+					if owner != "" {
+						ownerNumber = strings.Split(owner, "@")[0]
+					}
+					
 					profileName = fetchResult[0].ProfileName
+					if profileName == "" {
+						profileName = fetchResult[0].Instance.ProfileName
+					}
+
 					profilePicUrl = fetchResult[0].ProfilePicUrl
+					if profilePicUrl == "" {
+						profilePicUrl = fetchResult[0].ProfilePictureUrl
+					}
+					if profilePicUrl == "" {
+						profilePicUrl = fetchResult[0].Instance.ProfilePicUrl
+					}
+					if profilePicUrl == "" {
+						profilePicUrl = fetchResult[0].Instance.ProfilePictureUrl
+					}
 				}
 			}
 			
