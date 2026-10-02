@@ -798,6 +798,7 @@ func main() {
 
 	var processedMsgIDs sync.Map
 	var userLocks sync.Map // Control de concurrencia por usuario
+	var debounceTimers sync.Map // Control de Debounce (Cola de espera)
 
 	// ── Webhook de Evolution API (Reemplaza a N8N) ─────────
 	mux.HandleFunc("/api/webhook/evolution", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
@@ -878,15 +879,31 @@ func main() {
 		var config CompanyConfig
 		DB.Where("company_id = ?", companyID).First(&config)
 
-		var history []Conversation
-		DB.Where("lead_id = ?", lead.ID).Order("created_at asc").Find(&history)
+		// ─── DEBOUNCE LOGIC ───
+		// Cancelar el timer anterior si existe para este lead
+		if val, ok := debounceTimers.Load(lead.ID); ok {
+			timer := val.(*time.Timer)
+			timer.Stop()
+		}
 
-		go func() {
-			// Prevenir condición de carrera: procesar mensajes del mismo lead secuencialmente
+		// Crear un nuevo timer de 3 segundos
+		timer := time.AfterFunc(3*time.Second, func() {
+			debounceTimers.Delete(lead.ID)
+
+			// Prevenir condición de carrera en el procesamiento
 			lockObj, _ := userLocks.LoadOrStore(phone, &sync.Mutex{})
 			mu := lockObj.(*sync.Mutex)
 			mu.Lock()
 			defer mu.Unlock()
+
+			// Obtener el historial fresco (incluye todos los mensajes agrupados)
+			var history []Conversation
+			DB.Where("lead_id = ?", lead.ID).Order("created_at asc").Find(&history)
+
+			// Si el último mensaje es del asistente, alguien más ya respondió (seguridad extra)
+			if len(history) > 0 && history[len(history)-1].Role == "assistant" {
+				return
+			}
 
 			brainURL := os.Getenv("BRAIN_API_URL")
 			if brainURL == "" {
@@ -1044,7 +1061,8 @@ func main() {
 			} else {
 				log.Printf("✅ Modo Shadow: No se envía respuesta a %s", phone)
 			}
-		}()
+		})
+		debounceTimers.Store(lead.ID, timer)
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status": "ok"}`))
