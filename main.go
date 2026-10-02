@@ -80,11 +80,13 @@ type CompanyConfig struct {
 	ICP           string
 	ValueOffer    string
 	Prompt        string
+	Services      string
 	AgentName     string
 	KnowledgeBase string
 	ApolloEnabled bool   `json:"apollo_enabled"`
 	ApolloAPIKey  string `json:"apollo_api_key"`
 	AutoScheduleEnabled bool `json:"auto_schedule_enabled"`
+	BusinessHours string `json:"business_hours"`
 }
 
 // Lead representa un prospecto que escribe al WhatsApp
@@ -441,12 +443,14 @@ func main() {
 				Name          string `json:"name"`
 				ICP           string `json:"icp"`
 				ValueOffer    string `json:"value_offer"`
+				Services      string `json:"services"`
 				Prompt        string `json:"prompt"`
 				AgentName     string `json:"agent_name"`
 				KnowledgeBase string `json:"knowledge_base"`
 				ApolloEnabled bool   `json:"apollo_enabled"`
 				ApolloAPIKey  string `json:"apollo_api_key"`
 				AutoScheduleEnabled bool `json:"auto_schedule_enabled"`
+				BusinessHours string `json:"business_hours"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				jsonErr(w, http.StatusBadRequest, "payload inválido")
@@ -459,10 +463,10 @@ func main() {
 			var config CompanyConfig
 			result := DB.Where("company_id = ?", companyID).First(&config)
 			if result.Error != nil {
-				config = CompanyConfig{CompanyID: companyID, Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase, ApolloEnabled: req.ApolloEnabled, ApolloAPIKey: req.ApolloAPIKey, AutoScheduleEnabled: req.AutoScheduleEnabled}
+				config = CompanyConfig{CompanyID: companyID, Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Services: req.Services, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase, ApolloEnabled: req.ApolloEnabled, ApolloAPIKey: req.ApolloAPIKey, AutoScheduleEnabled: req.AutoScheduleEnabled, BusinessHours: req.BusinessHours}
 				DB.Create(&config)
 			} else {
-				DB.Model(&config).Updates(CompanyConfig{Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase, ApolloEnabled: req.ApolloEnabled, ApolloAPIKey: req.ApolloAPIKey, AutoScheduleEnabled: req.AutoScheduleEnabled})
+				DB.Model(&config).Updates(CompanyConfig{Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Services: req.Services, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase, ApolloEnabled: req.ApolloEnabled, ApolloAPIKey: req.ApolloAPIKey, AutoScheduleEnabled: req.AutoScheduleEnabled, BusinessHours: req.BusinessHours})
 			}
 			jsonOK(w, config)
 			return
@@ -904,6 +908,7 @@ func main() {
 				ApolloEnabled    bool   `json:"apollo_enabled"`
 				ApolloAPIKey     string `json:"apollo_api_key"`
 				AutoScheduleEnabled bool `json:"auto_schedule_enabled"`
+				BusinessHours       string `json:"business_hours"`
 				GoogleAccessToken   string `json:"google_access_token"`
 				GoogleRefreshToken  string `json:"google_refresh_token"`
 			}
@@ -911,26 +916,29 @@ func main() {
 			var reqHistory []Hist
 			for _, h := range history {
 				// Sanitizar: omitir mensajes de prueba corruptos antiguos con saludos repetidos o corchetes
-				if strings.Contains(h.Content, "[Tu Nombre]") || strings.Count(h.Content, "¡Hola!") > 1 || len(h.Content) > 300 {
+				if strings.Contains(h.Content, "[Tu Nombre]") || strings.Count(h.Content, "¡Hola!") > 1 {
 					continue
 				}
 				reqHistory = append(reqHistory, Hist{Role: h.Role, Content: h.Content})
 			}
 
 			reqBody := map[string]interface{}{
-				"message":    text,
-				"lead_phone": phone,
+				"message":     text,
+				"lead_phone":  phone,
+				"lead_name":   lead.Name,
+				"lead_status": lead.Status,
 				"company_config": Conf{
 					Name:             config.Name,
 					Icp:              config.ICP,
 					ValueOffer:       config.ValueOffer,
-					Services:         config.Prompt,
+					Services:         config.Services,
 					Prompt:           config.Prompt,
 					AgentName:        config.AgentName,
 					KnowledgeBase:    config.KnowledgeBase,
 					ApolloEnabled:    config.ApolloEnabled,
 					ApolloAPIKey:     config.ApolloAPIKey,
 					AutoScheduleEnabled: config.AutoScheduleEnabled,
+					BusinessHours:       config.BusinessHours,
 					GoogleAccessToken:   "", // Se llena abajo
 					GoogleRefreshToken:  "", // Se llena abajo
 				},
@@ -1027,10 +1035,14 @@ func main() {
 			}
 			DB.Model(&lead).Updates(updates)
 
-			if err := sendWhatsAppMessage(phone, brainResp.Response, payload.Instance); err != nil {
-				log.Printf("❌ Error enviando a Evolution API: %v", err)
+			if brainResp.Response != "" {
+				if err := sendWhatsAppMessage(phone, brainResp.Response, payload.Instance); err != nil {
+					log.Printf("❌ Error enviando a Evolution API: %v", err)
+				} else {
+					log.Printf("✅ Respuesta enviada a %s", phone)
+				}
 			} else {
-				log.Printf("✅ Respuesta enviada a %s", phone)
+				log.Printf("✅ Modo Shadow: No se envía respuesta a %s", phone)
 			}
 		}()
 
