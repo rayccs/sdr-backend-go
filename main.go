@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -55,6 +56,7 @@ type User struct {
 	LastLogin int64
 	Role      string `gorm:"default:'ADMIN'"` // ADMIN | EXECUTIVE
 	CompanyID string // Para asociar ejecutivos a una empresa
+	CompanyConfirmed bool `json:"company_confirmed" gorm:"default:false"`
 	// Perfil
 	FirstName    string
 	LastName     string
@@ -123,12 +125,15 @@ type Conversation struct {
 // KAM representa un ejecutivo de ventas del cliente
 type KAM struct {
 	gorm.Model
-	CompanyID string `json:"company_id"`
-	Name      string `json:"name"`
-	Role      string `json:"role"`
-	Phone     string `json:"phone"` // número WhatsApp con código de país
-	Active    bool   `json:"active"`
-	UserID    uint   `json:"user_id"` // ID del User para iniciar sesión
+	CompanyID    string `json:"company_id"`
+	Name         string `json:"name"`
+	Role         string `json:"role"`
+	Phone        string `json:"phone"` // número WhatsApp con código de país
+	Email        string `json:"email"`
+	Active       bool   `json:"active"`
+	UserID       uint   `json:"user_id"` // ID del User para iniciar sesión
+	InviteCode   string `json:"invite_code" gorm:"index"`
+	InviteStatus string `json:"invite_status"` // PENDING | REDEEMED
 }
 
 // RawLog guarda payloads de webhook desconocidos para depuración
@@ -224,6 +229,47 @@ func sendWhatsAppMessage(phone, message, instanceName string) error {
 		return fmt.Errorf("Evolution API error: %d %s", resp.StatusCode, string(bodyBytes))
 	}
 	return nil
+}
+
+// ─── Invite Codes & Domain Helpers ──────────────────────────────────────────
+
+func generateInviteCode() string {
+	const chars = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+	b := make([]byte, 6)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("INV-%X", time.Now().UnixNano()%1000000)
+	}
+	for i := range b {
+		b[i] = chars[int(b[i])%len(chars)]
+	}
+	return "INV-" + string(b)
+}
+
+var commonPublicEmailDomains = map[string]bool{
+	"gmail.com":      true,
+	"googlemail.com": true,
+	"hotmail.com":    true,
+	"outlook.com":    true,
+	"live.com":       true,
+	"msn.com":        true,
+	"yahoo.com":      true,
+	"yahoo.es":       true,
+	"icloud.com":     true,
+	"me.com":         true,
+	"mac.com":        true,
+	"proton.me":      true,
+	"protonmail.com": true,
+	"mail.com":       true,
+	"aol.com":        true,
+	"zoho.com":       true,
+}
+
+func getEmailDomain(email string) string {
+	parts := strings.Split(strings.TrimSpace(email), "@")
+	if len(parts) == 2 {
+		return strings.ToLower(strings.TrimSpace(parts[1]))
+	}
+	return ""
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -398,6 +444,7 @@ func main() {
 				Provider:           req.Provider, 
 				CompanyID:          resolvedCompanyID,
 				Role:               "ADMIN",
+				CompanyConfirmed:   false,
 				LastLogin:          now,
 				GoogleAccessToken:  req.AccessToken,
 				GoogleRefreshToken: req.RefreshToken,
@@ -430,9 +477,104 @@ func main() {
 			if user.CompanyID == "" || user.CompanyID == "default_company" {
 				updates.CompanyID = resolvedCompanyID
 			}
+			// Si es ejecutivo o ya tiene cerebro configurado, marcar como confirmado
+			if user.Role == "EXECUTIVE" {
+				updates.CompanyConfirmed = true
+			} else {
+				var countCfg int64
+				DB.Model(&CompanyConfig{}).Where("company_id = ?", user.CompanyID).Count(&countCfg)
+				if countCfg > 0 {
+					updates.CompanyConfirmed = true
+				}
+			}
 			DB.Model(&user).Updates(updates)
+			DB.Where("id = ?", user.ID).First(&user)
 		}
 		jsonOK(w, user)
+	}))
+
+	// ── Validar Dominio de Empresa ───────────────────────────────────────────
+	mux.HandleFunc("/api/company/check-domain", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+			return
+		}
+		var req struct {
+			Email string `json:"email"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonErr(w, http.StatusBadRequest, "payload inválido")
+			return
+		}
+		domain := getEmailDomain(req.Email)
+		if domain == "" {
+			jsonErr(w, http.StatusBadRequest, "formato de correo inválido")
+			return
+		}
+
+		// Si es un proveedor público (gmail, hotmail, etc.), se permite libremente crear empresa
+		if commonPublicEmailDomains[domain] {
+			jsonOK(w, map[string]interface{}{
+				"allowed":   true,
+				"domain":    domain,
+				"is_public": true,
+				"message":   "Dominio público permitido para registrar empresa",
+			})
+			return
+		}
+
+		cleanEmail := strings.ToLower(strings.TrimSpace(req.Email))
+		var count int64
+		// Validar si ya existe otro ADMIN con este mismo dominio corporativo
+		DB.Model(&User{}).Where("role = 'ADMIN' AND lower(email) LIKE ? AND lower(email) != ?", "%@"+domain, cleanEmail).Count(&count)
+		if count > 0 {
+			jsonErr(w, http.StatusConflict, fmt.Sprintf("Ya existe una empresa registrada con el dominio @%s. Si tu rol es de ejecutivo, comunícate con tu administrador para que se te asigne un código de invitación.", domain))
+			return
+		}
+
+		jsonOK(w, map[string]interface{}{
+			"allowed":   true,
+			"domain":    domain,
+			"is_public": false,
+			"message":   "Dominio corporativo disponible para crear nueva empresa",
+		})
+	}))
+
+	// ── Confirmar Creación de Empresa por Usuario ────────────────────────────
+	mux.HandleFunc("/api/users/confirm-company", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+			return
+		}
+		var req struct {
+			Email     string `json:"email"`
+			CompanyID string `json:"company_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonErr(w, http.StatusBadRequest, "payload inválido")
+			return
+		}
+		cleanEmail := strings.ToLower(strings.TrimSpace(req.Email))
+		if cleanEmail == "" {
+			jsonErr(w, http.StatusBadRequest, "email requerido")
+			return
+		}
+
+		var user User
+		if err := DB.Where("lower(email) = ?", cleanEmail).First(&user).Error; err == nil {
+			updates := map[string]interface{}{
+				"company_confirmed": true,
+				"role":              "ADMIN",
+			}
+			if req.CompanyID != "" {
+				updates["company_id"] = req.CompanyID
+			}
+			DB.Model(&user).Updates(updates)
+			user.CompanyConfirmed = true
+			jsonOK(w, user)
+			return
+		}
+		jsonOK(w, map[string]string{"message": "confirmado"})
 	}))
 
 	// ── Calendar Status ───────────────────────────────────────────────────────
@@ -759,6 +901,17 @@ func main() {
 		case "GET":
 			var kams []KAM
 			DB.Where("company_id = ? AND active = true", companyID).Find(&kams)
+			// Auto-generar código de invitación si no existiera previamente
+			for i := range kams {
+				if kams[i].InviteCode == "" {
+					kams[i].InviteCode = generateInviteCode()
+					kams[i].InviteStatus = "PENDING"
+					DB.Model(&kams[i]).Updates(map[string]interface{}{
+						"invite_code":   kams[i].InviteCode,
+						"invite_status": kams[i].InviteStatus,
+					})
+				}
+			}
 			jsonOK(w, kams)
 
 		case "POST":
@@ -769,12 +922,168 @@ func main() {
 			}
 			kam.CompanyID = companyID
 			kam.Active = true
+			if kam.InviteCode == "" {
+				kam.InviteCode = generateInviteCode()
+			}
+			if kam.InviteStatus == "" {
+				kam.InviteStatus = "PENDING"
+			}
 			DB.Create(&kam)
+
+			companyName := companyID
+			var cfg CompanyConfig
+			if err := DB.Where("company_id = ?", companyID).First(&cfg).Error; err == nil && cfg.Name != "" {
+				companyName = cfg.Name
+			}
+
+			if kam.Phone != "" {
+				inviteMsg := fmt.Sprintf("🔑 *Nodepath Command Center — Invitación a Equipo*\n\nHola %s, has sido invitado como Ejecutivo Comercial a %s.\n\nTu código de acceso exclusivo es:\n👉 *%s*\n\nIngresa en https://os.nodepath.com e introduce este código para acceder a tu bandeja compartida de leads.", kam.Name, companyName, kam.InviteCode)
+				sendWhatsAppMessage(kam.Phone, inviteMsg, "sdr-"+companyID)
+			}
 			jsonOK(w, kam)
 
 		default:
 			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
 		}
+	}))
+
+	// ── Canjear Código de Invitación (KAM / Ejecutivo) ───────────────────────
+	mux.HandleFunc("/api/kams/redeem-code", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+			return
+		}
+		var req struct {
+			Email string `json:"email"`
+			Code  string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonErr(w, http.StatusBadRequest, "payload inválido")
+			return
+		}
+		cleanCode := strings.ToUpper(strings.TrimSpace(req.Code))
+		if cleanCode == "" {
+			jsonErr(w, http.StatusBadRequest, "código de invitación requerido")
+			return
+		}
+		cleanEmail := strings.ToLower(strings.TrimSpace(req.Email))
+		if cleanEmail == "" {
+			jsonErr(w, http.StatusBadRequest, "email requerido")
+			return
+		}
+
+		var kam KAM
+		if err := DB.Where("UPPER(invite_code) = ? AND active = true", cleanCode).First(&kam).Error; err != nil {
+			jsonErr(w, http.StatusNotFound, "El código de invitación ingresado es inválido o no existe. Consulta a tu administrador.")
+			return
+		}
+
+		now := time.Now().Unix()
+		var user User
+		if err := DB.Where("lower(email) = ?", cleanEmail).First(&user).Error; err != nil {
+			// Usuario nuevo
+			user = User{
+				Email:            cleanEmail,
+				Name:             kam.Name,
+				Role:             "EXECUTIVE",
+				CompanyID:        kam.CompanyID,
+				CompanyConfirmed: true,
+				LastLogin:        now,
+			}
+			if err := DB.Create(&user).Error; err != nil {
+				jsonErr(w, http.StatusInternalServerError, "error al registrar usuario ejecutivo")
+				return
+			}
+		} else {
+			// Usuario existente -> actualizar a rol EXECUTIVE y asignar la empresa del KAM
+			DB.Model(&user).Updates(map[string]interface{}{
+				"role":              "EXECUTIVE",
+				"company_id":        kam.CompanyID,
+				"company_confirmed": true,
+				"last_login":        now,
+			})
+		}
+
+		kamUpdates := map[string]interface{}{
+			"invite_status": "REDEEMED",
+			"user_id":       user.ID,
+		}
+		if kam.Email == "" {
+			kamUpdates["email"] = cleanEmail
+		}
+		DB.Model(&kam).Updates(kamUpdates)
+
+		companyName := kam.CompanyID
+		var cfg CompanyConfig
+		if err := DB.Where("company_id = ?", kam.CompanyID).First(&cfg).Error; err == nil && cfg.Name != "" {
+			companyName = cfg.Name
+		}
+
+		jsonOK(w, map[string]interface{}{
+			"status":       "success",
+			"company_id":   kam.CompanyID,
+			"company_name": companyName,
+			"role":         "EXECUTIVE",
+			"kam_id":       kam.ID,
+			"kam_name":     kam.Name,
+			"invite_code":  kam.InviteCode,
+			"message":      fmt.Sprintf("¡Bienvenido! Te has unido exitosamente a %s como Ejecutivo Comercial.", companyName),
+		})
+	}))
+
+	// ── Reenviar / Regenerar Invitación de KAM ────────────────────────────────
+	mux.HandleFunc("/api/kams/resend-invite", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+			return
+		}
+		var req struct {
+			KAMID     uint   `json:"kam_id"`
+			CompanyID string `json:"company_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonErr(w, http.StatusBadRequest, "payload inválido")
+			return
+		}
+		if req.KAMID == 0 {
+			jsonErr(w, http.StatusBadRequest, "kam_id requerido")
+			return
+		}
+
+		var kam KAM
+		query := DB.Where("id = ?", req.KAMID)
+		if req.CompanyID != "" {
+			query = query.Where("company_id = ?", req.CompanyID)
+		}
+		if err := query.First(&kam).Error; err != nil {
+			jsonErr(w, http.StatusNotFound, "ejecutivo no encontrado")
+			return
+		}
+
+		newCode := generateInviteCode()
+		DB.Model(&kam).Updates(map[string]interface{}{
+			"invite_code":   newCode,
+			"invite_status": "PENDING",
+		})
+
+		companyName := kam.CompanyID
+		var cfg CompanyConfig
+		if err := DB.Where("company_id = ?", kam.CompanyID).First(&cfg).Error; err == nil && cfg.Name != "" {
+			companyName = cfg.Name
+		}
+
+		if kam.Phone != "" {
+			inviteMsg := fmt.Sprintf("🔑 *Nodepath Command Center — Código de Invitación Actualizado*\n\nHola %s, tu administrador ha renovado tu código de invitación para unirte como Ejecutivo Comercial a %s.\n\nTu nuevo código es:\n👉 *%s*\n\nIngresa en https://os.nodepath.com e introduce este código para acceder a tu bandeja de leads.", kam.Name, companyName, newCode)
+			sendWhatsAppMessage(kam.Phone, inviteMsg, "sdr-"+kam.CompanyID)
+		}
+
+		jsonOK(w, map[string]interface{}{
+			"invite_code":   newCode,
+			"invite_status": "PENDING",
+			"kam_id":        kam.ID,
+			"kam_name":      kam.Name,
+			"message":       fmt.Sprintf("Nuevo código %s generado y enviado exitosamente", newCode),
+		})
 	}))
 
 	// ── Handoff ──────────────────────────────────────────────────────────────
@@ -1525,28 +1834,44 @@ func main() {
 
 		hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 		user := User{
-			Email:     req.Email,
-			Name:      req.Name,
-			Password:  string(hashed),
-			Role:      "EXECUTIVE",
-			CompanyID: req.CompanyID,
+			Email:            req.Email,
+			Name:             req.Name,
+			Password:         string(hashed),
+			Role:             "EXECUTIVE",
+			CompanyID:        req.CompanyID,
+			CompanyConfirmed: true,
 		}
 		if err := DB.Create(&user).Error; err != nil {
 			jsonErr(w, http.StatusInternalServerError, "Error al crear usuario")
 			return
 		}
 
+		inviteCode := generateInviteCode()
 		kam := KAM{
-			CompanyID: req.CompanyID,
-			Name:      req.Name,
-			Role:      req.Role,
-			Phone:     req.Phone,
-			Active:    true,
-			UserID:    user.ID,
+			CompanyID:    req.CompanyID,
+			Name:         req.Name,
+			Role:         req.Role,
+			Phone:        req.Phone,
+			Email:        req.Email,
+			Active:       true,
+			UserID:       user.ID,
+			InviteCode:   inviteCode,
+			InviteStatus: "PENDING",
 		}
 		if err := DB.Create(&kam).Error; err != nil {
 			jsonErr(w, http.StatusInternalServerError, "Error al crear perfil KAM")
 			return
+		}
+
+		companyName := req.CompanyID
+		var cfg CompanyConfig
+		if err := DB.Where("company_id = ?", req.CompanyID).First(&cfg).Error; err == nil && cfg.Name != "" {
+			companyName = cfg.Name
+		}
+
+		if kam.Phone != "" {
+			inviteMsg := fmt.Sprintf("🔑 *Nodepath Command Center — Invitación a Equipo*\n\nHola %s, has sido registrado como Ejecutivo Comercial en %s.\n\nTu código de acceso exclusivo es:\n👉 *%s*\n\nIngresa en https://os.nodepath.com e introduce este código para acceder a tu bandeja de leads asignados.", kam.Name, companyName, kam.InviteCode)
+			sendWhatsAppMessage(kam.Phone, inviteMsg, "sdr-"+kam.CompanyID)
 		}
 
 		jsonOK(w, kam)
