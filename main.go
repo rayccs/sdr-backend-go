@@ -87,6 +87,8 @@ type CompanyConfig struct {
 	ApolloAPIKey  string `json:"apollo_api_key"`
 	AutoScheduleEnabled bool `json:"auto_schedule_enabled"`
 	BusinessHours string `json:"business_hours"`
+	FallbackMessageEnabled bool `json:"fallback_message_enabled"`
+	FallbackMessage string `json:"fallback_message"`
 }
 
 // Lead representa un prospecto que escribe al WhatsApp
@@ -383,13 +385,20 @@ func main() {
 		var user User
 		result := DB.Where("email = ?", req.Email).First(&user)
 		now := time.Now().Unix()
+		resolvedCompanyID := getCompanyID(r)
+		if resolvedCompanyID == "" || resolvedCompanyID == "default_company" {
+			resolvedCompanyID = strings.ReplaceAll(strings.ReplaceAll(req.Email, "@", "-"), ".", "-")
+		}
+
 		if result.Error != nil {
 			newUser := User{
-				Email: req.Email, 
-				Name: req.Name, 
-				Provider: req.Provider, 
-				LastLogin: now,
-				GoogleAccessToken: req.AccessToken,
+				Email:              req.Email, 
+				Name:               req.Name, 
+				Provider:           req.Provider, 
+				CompanyID:          resolvedCompanyID,
+				Role:               "ADMIN",
+				LastLogin:          now,
+				GoogleAccessToken:  req.AccessToken,
 				GoogleRefreshToken: req.RefreshToken,
 			}
 			if req.Provider != "Google" && req.Password != "" {
@@ -417,9 +426,46 @@ func main() {
 			if req.RefreshToken != "" {
 				updates.GoogleRefreshToken = req.RefreshToken
 			}
+			if user.CompanyID == "" || user.CompanyID == "default_company" {
+				updates.CompanyID = resolvedCompanyID
+			}
 			DB.Model(&user).Updates(updates)
 		}
 		jsonOK(w, user)
+	}))
+
+	// ── Calendar Status ───────────────────────────────────────────────────────
+	mux.HandleFunc("/api/calendar/status", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		companyID := getCompanyID(r)
+		userEmail := r.URL.Query().Get("email")
+		
+		var adminUser User
+		connected := false
+		
+		if userEmail != "" {
+			if err := DB.Where("email = ? AND google_access_token != ''", userEmail).First(&adminUser).Error; err == nil {
+				connected = true
+			}
+		}
+		if !connected && companyID != "" {
+			if err := DB.Where("company_id = ? AND role = 'ADMIN' AND google_access_token != ''", companyID).First(&adminUser).Error; err == nil {
+				connected = true
+			} else if err := DB.Where("REPLACE(REPLACE(email, '@', '-'), '.', '-') = ? AND google_access_token != ''", companyID).First(&adminUser).Error; err == nil {
+				connected = true
+			}
+		}
+
+		var config CompanyConfig
+		autoSchedule := false
+		if err := DB.Where("company_id = ?", companyID).First(&config).Error; err == nil {
+			autoSchedule = config.AutoScheduleEnabled
+		}
+
+		jsonOK(w, map[string]interface{}{
+			"connected": connected,
+			"auto_schedule_enabled": autoSchedule,
+			"email": adminUser.Email,
+		})
 	}))
 
 	// ── Company Config ───────────────────────────────────────────────────────
@@ -451,6 +497,8 @@ func main() {
 				ApolloAPIKey  string `json:"apollo_api_key"`
 				AutoScheduleEnabled bool `json:"auto_schedule_enabled"`
 				BusinessHours string `json:"business_hours"`
+				FallbackMessageEnabled bool `json:"fallback_message_enabled"`
+				FallbackMessage string `json:"fallback_message"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				jsonErr(w, http.StatusBadRequest, "payload inválido")
@@ -462,11 +510,41 @@ func main() {
 
 			var config CompanyConfig
 			result := DB.Where("company_id = ?", companyID).First(&config)
+			updates := map[string]interface{}{
+				"name":                     req.Name,
+				"icp":                      req.ICP,
+				"value_offer":              req.ValueOffer,
+				"services":                 req.Services,
+				"prompt":                   req.Prompt,
+				"agent_name":               req.AgentName,
+				"knowledge_base":           req.KnowledgeBase,
+				"apollo_enabled":           req.ApolloEnabled,
+				"apollo_api_key":           req.ApolloAPIKey,
+				"auto_schedule_enabled":    req.AutoScheduleEnabled,
+				"business_hours":           req.BusinessHours,
+				"fallback_message_enabled": req.FallbackMessageEnabled,
+				"fallback_message":         req.FallbackMessage,
+			}
 			if result.Error != nil {
-				config = CompanyConfig{CompanyID: companyID, Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Services: req.Services, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase, ApolloEnabled: req.ApolloEnabled, ApolloAPIKey: req.ApolloAPIKey, AutoScheduleEnabled: req.AutoScheduleEnabled, BusinessHours: req.BusinessHours}
+				config = CompanyConfig{
+					CompanyID:              companyID,
+					Name:                   req.Name,
+					ICP:                    req.ICP,
+					ValueOffer:             req.ValueOffer,
+					Services:               req.Services,
+					Prompt:                 req.Prompt,
+					AgentName:              req.AgentName,
+					KnowledgeBase:          req.KnowledgeBase,
+					ApolloEnabled:          req.ApolloEnabled,
+					ApolloAPIKey:           req.ApolloAPIKey,
+					AutoScheduleEnabled:    req.AutoScheduleEnabled,
+					BusinessHours:          req.BusinessHours,
+					FallbackMessageEnabled: req.FallbackMessageEnabled,
+					FallbackMessage:        req.FallbackMessage,
+				}
 				DB.Create(&config)
 			} else {
-				DB.Model(&config).Updates(CompanyConfig{Name: req.Name, ICP: req.ICP, ValueOffer: req.ValueOffer, Services: req.Services, Prompt: req.Prompt, AgentName: req.AgentName, KnowledgeBase: req.KnowledgeBase, ApolloEnabled: req.ApolloEnabled, ApolloAPIKey: req.ApolloAPIKey, AutoScheduleEnabled: req.AutoScheduleEnabled, BusinessHours: req.BusinessHours})
+				DB.Model(&config).Updates(updates)
 			}
 			jsonOK(w, config)
 			return
@@ -925,9 +1003,11 @@ func main() {
 				ApolloEnabled    bool   `json:"apollo_enabled"`
 				ApolloAPIKey     string `json:"apollo_api_key"`
 				AutoScheduleEnabled bool `json:"auto_schedule_enabled"`
-				BusinessHours       string `json:"business_hours"`
-				GoogleAccessToken   string `json:"google_access_token"`
-				GoogleRefreshToken  string `json:"google_refresh_token"`
+				BusinessHours          string `json:"business_hours"`
+				FallbackMessageEnabled bool   `json:"fallback_message_enabled"`
+				FallbackMessage        string `json:"fallback_message"`
+				GoogleAccessToken      string `json:"google_access_token"`
+				GoogleRefreshToken     string `json:"google_refresh_token"`
 			}
 
 			var reqHistory []Hist
@@ -945,19 +1025,21 @@ func main() {
 				"lead_name":   lead.Name,
 				"lead_status": lead.Status,
 				"company_config": Conf{
-					Name:             config.Name,
-					Icp:              config.ICP,
-					ValueOffer:       config.ValueOffer,
-					Services:         config.Services,
-					Prompt:           config.Prompt,
-					AgentName:        config.AgentName,
-					KnowledgeBase:    config.KnowledgeBase,
-					ApolloEnabled:    config.ApolloEnabled,
-					ApolloAPIKey:     config.ApolloAPIKey,
-					AutoScheduleEnabled: config.AutoScheduleEnabled,
-					BusinessHours:       config.BusinessHours,
-					GoogleAccessToken:   "", // Se llena abajo
-					GoogleRefreshToken:  "", // Se llena abajo
+					Name:                   config.Name,
+					Icp:                    config.ICP,
+					ValueOffer:             config.ValueOffer,
+					Services:               config.Services,
+					Prompt:                 config.Prompt,
+					AgentName:              config.AgentName,
+					KnowledgeBase:          config.KnowledgeBase,
+					ApolloEnabled:          config.ApolloEnabled,
+					ApolloAPIKey:           config.ApolloAPIKey,
+					AutoScheduleEnabled:    config.AutoScheduleEnabled,
+					BusinessHours:          config.BusinessHours,
+					FallbackMessageEnabled: config.FallbackMessageEnabled,
+					FallbackMessage:        config.FallbackMessage,
+					GoogleAccessToken:      "", // Se llena abajo
+					GoogleRefreshToken:     "", // Se llena abajo
 				},
 				"history": reqHistory,
 			}
