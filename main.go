@@ -86,6 +86,7 @@ type CompanyConfig struct {
 	ApolloEnabled bool   `json:"apollo_enabled"`
 	ApolloAPIKey  string `json:"apollo_api_key"`
 	AutoScheduleEnabled bool `json:"auto_schedule_enabled"`
+	AutoKamEnabled      bool `json:"auto_kam_enabled"`
 	BusinessHours string `json:"business_hours"`
 	FallbackMessageEnabled bool `json:"fallback_message_enabled"`
 	FallbackMessage string `json:"fallback_message"`
@@ -457,14 +458,17 @@ func main() {
 
 		var config CompanyConfig
 		autoSchedule := false
+		autoKam := false
 		if err := DB.Where("company_id = ?", companyID).First(&config).Error; err == nil {
 			autoSchedule = config.AutoScheduleEnabled
+			autoKam = config.AutoKamEnabled
 		}
 
 		jsonOK(w, map[string]interface{}{
-			"connected": connected,
+			"connected":             connected,
 			"auto_schedule_enabled": autoSchedule,
-			"email": adminUser.Email,
+			"auto_kam_enabled":      autoKam,
+			"email":                 adminUser.Email,
 		})
 	}))
 
@@ -485,20 +489,21 @@ func main() {
 
 		if r.Method == "POST" {
 			var req struct {
-				CompanyID     string `json:"company_id"`
-				Name          string `json:"name"`
-				ICP           string `json:"icp"`
-				ValueOffer    string `json:"value_offer"`
-				Services      string `json:"services"`
-				Prompt        string `json:"prompt"`
-				AgentName     string `json:"agent_name"`
-				KnowledgeBase string `json:"knowledge_base"`
-				ApolloEnabled bool   `json:"apollo_enabled"`
-				ApolloAPIKey  string `json:"apollo_api_key"`
-				AutoScheduleEnabled bool `json:"auto_schedule_enabled"`
-				BusinessHours string `json:"business_hours"`
-				FallbackMessageEnabled bool `json:"fallback_message_enabled"`
-				FallbackMessage string `json:"fallback_message"`
+				CompanyID              string `json:"company_id"`
+				Name                   string `json:"name"`
+				ICP                    string `json:"icp"`
+				ValueOffer             string `json:"value_offer"`
+				Services               string `json:"services"`
+				Prompt                 string `json:"prompt"`
+				AgentName              string `json:"agent_name"`
+				KnowledgeBase          string `json:"knowledge_base"`
+				ApolloEnabled          bool   `json:"apollo_enabled"`
+				ApolloAPIKey           string `json:"apollo_api_key"`
+				AutoScheduleEnabled    bool   `json:"auto_schedule_enabled"`
+				AutoKamEnabled         bool   `json:"auto_kam_enabled"`
+				BusinessHours          string `json:"business_hours"`
+				FallbackMessageEnabled bool   `json:"fallback_message_enabled"`
+				FallbackMessage        string `json:"fallback_message"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				jsonErr(w, http.StatusBadRequest, "payload inválido")
@@ -521,6 +526,7 @@ func main() {
 				"apollo_enabled":           req.ApolloEnabled,
 				"apollo_api_key":           req.ApolloAPIKey,
 				"auto_schedule_enabled":    req.AutoScheduleEnabled,
+				"auto_kam_enabled":         req.AutoKamEnabled,
 				"business_hours":           req.BusinessHours,
 				"fallback_message_enabled": req.FallbackMessageEnabled,
 				"fallback_message":         req.FallbackMessage,
@@ -538,6 +544,7 @@ func main() {
 					ApolloEnabled:          req.ApolloEnabled,
 					ApolloAPIKey:           req.ApolloAPIKey,
 					AutoScheduleEnabled:    req.AutoScheduleEnabled,
+					AutoKamEnabled:         req.AutoKamEnabled,
 					BusinessHours:          req.BusinessHours,
 					FallbackMessageEnabled: req.FallbackMessageEnabled,
 					FallbackMessage:        req.FallbackMessage,
@@ -546,6 +553,12 @@ func main() {
 			} else {
 				DB.Model(&config).Updates(updates)
 			}
+
+			// Si el cliente activó la asignación automática, asignar de inmediato leads pendientes
+			if req.AutoKamEnabled {
+				go autoAssignPendingLeads(companyID)
+			}
+
 			jsonOK(w, config)
 			return
 		}
@@ -854,6 +867,20 @@ func main() {
 		})
 	}))
 
+	// ── Auto-Asignación de KAMs ──────────────────────────────────────────────
+	mux.HandleFunc("/api/kams/auto-assign", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+			return
+		}
+		companyID := getCompanyID(r)
+		count := autoAssignPendingLeads(companyID)
+		jsonOK(w, map[string]interface{}{
+			"assigned": count,
+			"message":  fmt.Sprintf("Se auto-asignaron %d leads pendientes a ejecutivos KAM", count),
+		})
+	}))
+
 	// Estructuras para parsear el webhook de Evolution
 	type EvolutionWebhook struct {
 		Event    string `json:"event"`
@@ -1133,6 +1160,19 @@ func main() {
 				updates["name"] = brainResp.Bant.Name
 			}
 			DB.Model(&lead).Updates(updates)
+
+			// Si la auto-asignación de KAM está activada y el lead quedó listo para agendar o ya agendado
+			if config.AutoKamEnabled && (brainResp.Bant.Status == "POR_AGENDAR" || strings.Contains(strings.ToLower(brainResp.Bant.NextStep), "reunión") || strings.Contains(strings.ToLower(brainResp.Bant.NextStep), "reunion")) {
+				go func(leadID uint, compID string, brief, act string) {
+					time.Sleep(1 * time.Second)
+					var freshLead Lead
+					if err := DB.Where("id = ?", leadID).First(&freshLead).Error; err == nil {
+						if freshLead.AssignedKam == "" {
+							autoAssignLeadToKAM(&freshLead, compID, brief, act)
+						}
+					}
+				}(lead.ID, companyID, brainResp.Bant.Pain, brainResp.Bant.NextStep)
+			}
 
 			if brainResp.Response != "" {
 				if err := sendWhatsAppMessage(phone, brainResp.Response, payload.Instance); err != nil {
@@ -1630,3 +1670,90 @@ func ensureEvolutionWebhook(instanceName string) {
 		resp.Body.Close()
 	}
 }
+
+// autoAssignLeadToKAM asigna el lead a un KAM activo con menor carga y le envía la notificación por WhatsApp
+func autoAssignLeadToKAM(lead *Lead, companyID string, brief string, action string) (bool, string) {
+	var kams []KAM
+	DB.Where("company_id = ? AND active = true", companyID).Find(&kams)
+	if len(kams) == 0 {
+		log.Printf("⚠️ Auto-KAM: No hay ejecutivos KAM activos registrados para empresa: %s", companyID)
+		return false, "no hay KAMs activos"
+	}
+
+	// Seleccionar el KAM con menor carga de leads activos
+	bestKam := kams[0]
+	minCount := int64(999999)
+	for _, k := range kams {
+		var count int64
+		DB.Model(&Lead{}).Where("company_id = ? AND assigned_kam = ? AND status IN ('HANDOFF', 'POR_AGENDAR')", companyID, k.Name).Count(&count)
+		if count < minCount {
+			minCount = count
+			bestKam = k
+		}
+	}
+
+	phoneNumbersOnly := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, lead.Phone)
+
+	briefLines := []string{
+		"🤖 *SDR Cognitivo — Asignación Automática de Lead*",
+		"",
+		fmt.Sprintf("👤 *Lead:* %s", lead.Name),
+		fmt.Sprintf("🏢 *Empresa:* %s", lead.Company),
+		fmt.Sprintf("📱 *Contacto:* %s", lead.Phone),
+		fmt.Sprintf("🎯 *Score BANT:* %d/100", lead.BantScore),
+		"",
+		fmt.Sprintf("🧠 *Brief / Caso:* %s", brief),
+		fmt.Sprintf("📅 *Próximo Paso / Agenda:* %s", action),
+		"",
+		fmt.Sprintf("🔗 *Iniciar Chat con el Lead:* https://wa.me/%s", phoneNumbersOnly),
+		"🔗 *Ver en plataforma:* https://os.nodepath.com/marketing/sdr",
+	}
+	handoffMsgKam := strings.Join(briefLines, "\n")
+
+	if bestKam.Phone != "" {
+		if err := sendWhatsAppMessage(bestKam.Phone, handoffMsgKam, "sdr-"+companyID); err != nil {
+			log.Printf("⚠️ Error enviando WhatsApp automático a KAM %s: %v", bestKam.Name, err)
+		} else {
+			log.Printf("✅ WhatsApp de auto-asignación enviado a KAM %s (%s)", bestKam.Name, bestKam.Phone)
+		}
+	}
+
+	// Actualizar lead a estado HANDOFF con el KAM asignado
+	DB.Model(lead).Updates(map[string]interface{}{
+		"status":       "HANDOFF",
+		"assigned_kam": bestKam.Name,
+	})
+
+	return true, bestKam.Name
+}
+
+// autoAssignPendingLeads busca todos los leads pendientes por agendar sin asignar y los asigna automáticamente
+func autoAssignPendingLeads(companyID string) int {
+	var pendingLeads []Lead
+	DB.Where("company_id = ? AND status = 'POR_AGENDAR' AND (assigned_kam = '' OR assigned_kam IS NULL)", companyID).Find(&pendingLeads)
+	countAssigned := 0
+	for _, l := range pendingLeads {
+		leadCopy := l
+		var enriched map[string]interface{}
+		json.Unmarshal([]byte(leadCopy.EnrichedData), &enriched)
+		brief := leadCopy.Pain
+		if b, ok := enriched["pain"].(string); ok && b != "" {
+			brief = b
+		}
+		action := "Reunión agendada"
+		if nextStep, ok := enriched["next_step"].(string); ok && nextStep != "" {
+			action = nextStep
+		}
+		if ok, kamName := autoAssignLeadToKAM(&leadCopy, companyID, brief, action); ok {
+			log.Printf("Auto-asignado lead #%d (%s) a KAM %s", leadCopy.ID, leadCopy.Name, kamName)
+			countAssigned++
+		}
+	}
+	return countAssigned
+}
+
