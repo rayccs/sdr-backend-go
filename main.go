@@ -84,6 +84,7 @@ type CompanyConfig struct {
 	Prompt        string
 	Services      string
 	AgentName     string
+	Country       string `json:"country"`
 	KnowledgeBase string
 	ApolloEnabled bool   `json:"apollo_enabled"`
 	ApolloAPIKey  string `json:"apollo_api_key"`
@@ -638,6 +639,7 @@ func main() {
 				Services               string `json:"services"`
 				Prompt                 string `json:"prompt"`
 				AgentName              string `json:"agent_name"`
+				Country                string `json:"country"`
 				KnowledgeBase          string `json:"knowledge_base"`
 				ApolloEnabled          bool   `json:"apollo_enabled"`
 				ApolloAPIKey           string `json:"apollo_api_key"`
@@ -664,6 +666,7 @@ func main() {
 				"services":                 req.Services,
 				"prompt":                   req.Prompt,
 				"agent_name":               req.AgentName,
+				"country":                  req.Country,
 				"knowledge_base":           req.KnowledgeBase,
 				"apollo_enabled":           req.ApolloEnabled,
 				"apollo_api_key":           req.ApolloAPIKey,
@@ -682,6 +685,7 @@ func main() {
 					Services:               req.Services,
 					Prompt:                 req.Prompt,
 					AgentName:              req.AgentName,
+					Country:                req.Country,
 					KnowledgeBase:          req.KnowledgeBase,
 					ApolloEnabled:          req.ApolloEnabled,
 					ApolloAPIKey:           req.ApolloAPIKey,
@@ -1335,6 +1339,7 @@ func main() {
 				Services         string `json:"services"`
 				Prompt           string `json:"prompt"`
 				AgentName        string `json:"agent_name"`
+				Country          string `json:"country"`
 				KnowledgeBase    string `json:"knowledge_base"`
 				ApolloEnabled    bool   `json:"apollo_enabled"`
 				ApolloAPIKey     string `json:"apollo_api_key"`
@@ -1367,6 +1372,7 @@ func main() {
 					Services:               config.Services,
 					Prompt:                 config.Prompt,
 					AgentName:              config.AgentName,
+					Country:                config.Country,
 					KnowledgeBase:          config.KnowledgeBase,
 					ApolloEnabled:          config.ApolloEnabled,
 					ApolloAPIKey:           config.ApolloAPIKey,
