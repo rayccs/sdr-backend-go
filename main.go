@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/smtp"
 	"net/url"
 	"os"
 	"strconv"
@@ -955,12 +956,20 @@ func main() {
 				inviteMsg := fmt.Sprintf("🔑 *Nodepath Command Center — Invitación a Equipo*\n\nHola %s, has sido registrado como Ejecutivo Comercial en %s.\n\nIngresa con tu correo en https://os.nodepath.com para acceder a tu bandeja compartida de leads.\n\n(Tu código de referencia de equipo es: *%s*)", kam.Name, companyName, kam.InviteCode)
 				sendWhatsAppMessage(kam.Phone, inviteMsg, "sdr-"+companyID)
 			}
+			if kam.Email != "" {
+				sendKamNotificationEmail(kam.Email, kam.Name, kam.Role, companyName, kam.InviteCode, false)
+			}
 			jsonOK(w, kam)
+
+		case "PUT":
+			handleKamUpdate(w, r)
 
 		default:
 			jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
 		}
 	}))
+
+	mux.HandleFunc("/api/kams/update", corsMiddleware(handleKamUpdate))
 
 	// ── Canjear Código de Invitación (KAM / Ejecutivo) ───────────────────────
 	mux.HandleFunc("/api/kams/redeem-code", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
@@ -1090,6 +1099,10 @@ func main() {
 		if kam.Phone != "" {
 			inviteMsg := fmt.Sprintf("🔑 *Nodepath Command Center — Código de Invitación Actualizado*\n\nHola %s, tu administrador ha renovado tu código de invitación para unirte como Ejecutivo Comercial a %s.\n\nTu nuevo código es:\n👉 *%s*\n\nIngresa en https://os.nodepath.com e introduce este código para acceder a tu bandeja de leads.", kam.Name, companyName, newCode)
 			sendWhatsAppMessage(kam.Phone, inviteMsg, "sdr-"+kam.CompanyID)
+		}
+
+		if kam.Email != "" {
+			sendKamNotificationEmail(kam.Email, kam.Name, kam.Role, companyName, newCode, false)
 		}
 
 		jsonOK(w, map[string]interface{}{
@@ -1908,6 +1921,10 @@ func main() {
 			sendWhatsAppMessage(kam.Phone, inviteMsg, "sdr-"+kam.CompanyID)
 		}
 
+		if kam.Email != "" {
+			sendKamNotificationEmail(kam.Email, kam.Name, kam.Role, companyName, kam.InviteCode, false)
+		}
+
 		jsonOK(w, kam)
 	}))
 
@@ -1966,6 +1983,171 @@ func main() {
 	if err := http.ListenAndServe("0.0.0.0:"+port, mux); err != nil {
 		log.Fatalf("Error al arrancar el servidor: %v", err)
 	}
+}
+
+// sendKamNotificationEmail envía un correo con las credenciales y código de acceso al KAM
+func sendKamNotificationEmail(toEmail, kamName, kamRole, companyName, inviteCode string, isEdit bool) {
+	if strings.TrimSpace(toEmail) == "" {
+		return
+	}
+	go func() {
+		smtpHost := os.Getenv("SMTP_HOST")
+		if smtpHost == "" {
+			smtpHost = "smtp.gmail.com"
+		}
+		smtpPort := os.Getenv("SMTP_PORT")
+		if smtpPort == "" {
+			smtpPort = "587"
+		}
+		smtpUser := os.Getenv("SMTP_USER")
+		if smtpUser == "" {
+			smtpUser = "nodepathsystems@gmail.com"
+		}
+		smtpPass := os.Getenv("SMTP_PASSWORD")
+		if smtpPass == "" {
+			smtpPass = "sbaeergbczmilvgi"
+		}
+
+		auth := smtp.PlainAuth("", smtpUser, smtpPass, smtpHost)
+
+		actionTitle := "Invitación al Equipo Comercial"
+		actionDesc := fmt.Sprintf("Has sido registrado como Ejecutivo Comercial (%s) en <strong>%s</strong>.", kamRole, companyName)
+		if isEdit {
+			actionTitle = "Perfil de Ejecutivo Actualizado"
+			actionDesc = fmt.Sprintf("Tus datos de acceso y perfil comercial han sido actualizados en <strong>%s</strong>.", companyName)
+		}
+
+		subject := fmt.Sprintf("%s — %s", actionTitle, companyName)
+		loginUrl := "https://os.getnodepath.com"
+
+		body := fmt.Sprintf("From: Nodepath Command Center <%s>\r\n"+
+			"To: %s\r\n"+
+			"Subject: %s\r\n"+
+			"MIME-Version: 1.0\r\n"+
+			"Content-Type: text/html; charset=UTF-8\r\n\r\n"+
+			"<div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #0b141a; color: #fff; padding: 30px; border-radius: 12px; border: 1px solid rgba(0,251,255,0.3);\">"+
+			"<h2 style=\"color: #00fbff; margin-top: 0;\">Nodepath Command Center</h2>"+
+			"<h3 style=\"color: #fff;\">%s</h3>"+
+			"<p style=\"color: #ccc;\">Hola <strong>%s</strong>,</p>"+
+			"<p style=\"color: #ccc;\">%s</p>"+
+			"<div style=\"background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #00fbff;\">"+
+			"<p style=\"margin: 5px 0;\"><strong>Rol:</strong> %s</p>"+
+			"<p style=\"margin: 5px 0;\"><strong>Email:</strong> %s</p>"+
+			"<p style=\"margin: 5px 0;\"><strong>Código de Invitación:</strong> <span style=\"color: #00fbff; font-family: monospace; font-size: 16px;\">%s</span></p>"+
+			"</div>"+
+			"<p style=\"text-align: center; margin: 25px 0;\">"+
+			"<a href=\"%s\" style=\"background: #00fbff; color: #000; padding: 12px 25px; border-radius: 6px; text-decoration: none; font-weight: bold;\">Ingresar a la Plataforma</a>"+
+			"</p>"+
+			"<p style=\"font-size: 11px; color: #888; text-align: center;\">Este correo fue generado automáticamente por Nodepath SDR Cognitivo.</p>"+
+			"</div>", smtpUser, toEmail, subject, actionTitle, kamName, actionDesc, kamRole, toEmail, inviteCode, loginUrl)
+
+		err := smtp.SendMail(smtpHost+":"+smtpPort, auth, smtpUser, []string{toEmail}, []byte(body))
+		if err != nil {
+			log.Printf("⚠️ [KAM Mailer Go] Error enviando correo a %s: %v", toEmail, err)
+		} else {
+			log.Printf("✅ [KAM Mailer Go] Correo enviado exitosamente a %s", toEmail)
+		}
+	}()
+}
+
+// handleKamUpdate actualiza los datos de un KAM existente
+func handleKamUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "PUT" && r.Method != "POST" {
+		jsonErr(w, http.StatusMethodNotAllowed, "método no permitido")
+		return
+	}
+	companyID := getCompanyID(r)
+	var req struct {
+		ID        uint   `json:"id"`
+		Name      string `json:"name"`
+		Role      string `json:"role"`
+		Phone     string `json:"phone"`
+		Email     string `json:"email"`
+		Active    *bool  `json:"active"`
+		CompanyID string `json:"company_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErr(w, http.StatusBadRequest, "payload inválido")
+		return
+	}
+	if req.ID == 0 {
+		jsonErr(w, http.StatusBadRequest, "id requerido")
+		return
+	}
+	if req.CompanyID != "" {
+		companyID = req.CompanyID
+	}
+
+	var kam KAM
+	query := DB.Where("id = ?", req.ID)
+	if companyID != "" {
+		query = query.Where("company_id = ?", companyID)
+	}
+	if err := query.First(&kam).Error; err != nil {
+		jsonErr(w, http.StatusNotFound, "ejecutivo no encontrado")
+		return
+	}
+
+	updates := map[string]interface{}{}
+	if req.Name != "" {
+		kam.Name = strings.TrimSpace(req.Name)
+		updates["name"] = kam.Name
+	}
+	if req.Role != "" {
+		kam.Role = strings.TrimSpace(req.Role)
+		updates["role"] = kam.Role
+	}
+	if req.Phone != "" {
+		cleanPhone := strings.Map(func(r rune) rune {
+			if r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, req.Phone)
+		if len(cleanPhone) == 9 && strings.HasPrefix(cleanPhone, "9") {
+			cleanPhone = "56" + cleanPhone
+		}
+		kam.Phone = cleanPhone
+		updates["phone"] = kam.Phone
+	}
+	if req.Email != "" {
+		kam.Email = strings.TrimSpace(req.Email)
+		updates["email"] = kam.Email
+	}
+	if req.Active != nil {
+		kam.Active = *req.Active
+		updates["active"] = kam.Active
+	}
+
+	DB.Model(&kam).Updates(updates)
+
+	if kam.UserID != 0 {
+		userUpdates := map[string]interface{}{}
+		if kam.Name != "" {
+			userUpdates["name"] = kam.Name
+		}
+		if kam.Email != "" {
+			userUpdates["email"] = kam.Email
+		}
+		DB.Model(&User{}).Where("id = ?", kam.UserID).Updates(userUpdates)
+	}
+
+	companyName := kam.CompanyID
+	var cfg CompanyConfig
+	if err := DB.Where("company_id = ?", kam.CompanyID).First(&cfg).Error; err == nil && cfg.Name != "" {
+		companyName = cfg.Name
+	}
+
+	if kam.Phone != "" {
+		msg := fmt.Sprintf("👤 *Nodepath Command Center — Perfil de Ejecutivo Actualizado*\n\nHola %s, tu perfil de Ejecutivo Comercial en %s ha sido actualizado.\n\nRol: %s\nEmail: %s\nCódigo de Referencia: *%s*\n\nAccede en https://os.getnodepath.com", kam.Name, companyName, kam.Role, kam.Email, kam.InviteCode)
+		sendWhatsAppMessage(kam.Phone, msg, "sdr-"+kam.CompanyID)
+	}
+
+	if kam.Email != "" {
+		sendKamNotificationEmail(kam.Email, kam.Name, kam.Role, companyName, kam.InviteCode, true)
+	}
+
+	jsonOK(w, kam)
 }
 
 // ─── DB Init ─────────────────────────────────────────────────────────────────
