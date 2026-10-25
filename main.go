@@ -925,6 +925,7 @@ func main() {
 				return
 			}
 			kam.CompanyID = companyID
+			kam.Name = strings.TrimSpace(kam.Name)
 			kam.Active = true
 			if kam.InviteCode == "" {
 				kam.InviteCode = generateInviteCode()
@@ -941,7 +942,7 @@ func main() {
 			}
 
 			if kam.Phone != "" {
-				inviteMsg := fmt.Sprintf("🔑 *Nodepath Command Center — Invitación a Equipo*\n\nHola %s, has sido invitado como Ejecutivo Comercial a %s.\n\nTu código de acceso exclusivo es:\n👉 *%s*\n\nIngresa en https://os.nodepath.com e introduce este código para acceder a tu bandeja compartida de leads.", kam.Name, companyName, kam.InviteCode)
+				inviteMsg := fmt.Sprintf("🔑 *Nodepath Command Center — Invitación a Equipo*\n\nHola %s, has sido registrado como Ejecutivo Comercial en %s.\n\nIngresa con tu correo en https://os.nodepath.com para acceder a tu bandeja compartida de leads.\n\n(Tu código de referencia de equipo es: *%s*)", kam.Name, companyName, kam.InviteCode)
 				sendWhatsAppMessage(kam.Phone, inviteMsg, "sdr-"+companyID)
 			}
 			jsonOK(w, kam)
@@ -1129,6 +1130,16 @@ func main() {
 			return -1
 		}, lead.Phone)
 
+		kamCleanName := strings.TrimSpace(req.KamName)
+		briefText := req.AIBrief
+		if briefText == "" || strings.Contains(briefText, "Error al generar") {
+			if lead.Pain != "" {
+				briefText = fmt.Sprintf("Dolor detectado: %s", lead.Pain)
+			} else {
+				briefText = "Prospecto calificado vía WhatsApp. Revisar conversación previa para detalles."
+			}
+		}
+
 		// Construir el mensaje de handoff para el KAM
 		briefLines := []string{
 			fmt.Sprintf("🤖 *SDR Cognitivo — Nuevo Lead Transferido*"),
@@ -1138,7 +1149,7 @@ func main() {
 			fmt.Sprintf("📱 *Contacto:* %s", lead.Phone),
 			fmt.Sprintf("🎯 *Score BANT:* %d/100", lead.BantScore),
 			fmt.Sprintf(""),
-			fmt.Sprintf("🧠 *Brief de la IA:* %s", req.AIBrief),
+			fmt.Sprintf("🧠 *Brief de la IA:* %s", briefText),
 			fmt.Sprintf("💡 *Acción recomendada:* %s", req.RecommendedAction),
 			fmt.Sprintf(""),
 			fmt.Sprintf("🔗 *Iniciar Chat con el Lead:* https://wa.me/%s", phoneNumbersOnly),
@@ -1162,7 +1173,13 @@ func main() {
 		}, req.KamPhone)
 
 		// Construir y enviar mensaje al Lead informando de la transferencia
-		handoffMsgLead := fmt.Sprintf("¡Excelente! Te transferiré con %s, nuestro especialista comercial.\n\nTe escribirá en breve, o si lo prefieres, puedes contactarle directamente haciendo click aquí: https://wa.me/%s", req.KamName, kamPhoneNumbersOnly)
+		isScheduled := strings.Contains(strings.ToLower(lead.EnrichedData), "agendad") || strings.Contains(strings.ToLower(lead.EnrichedData), "videollamada") || strings.Contains(strings.ToLower(lead.Pain), "agendad") || lead.Status == "POR_AGENDAR"
+		var handoffMsgLead string
+		if isScheduled {
+			handoffMsgLead = fmt.Sprintf("¡Excelente! Te confirmamos que tu videollamada agendada estará a cargo de %s, nuestro especialista comercial.\n\nSi deseas consultar algo previamente o adelantar información, puedes escribirle directamente haciendo click aquí: https://wa.me/%s", kamCleanName, kamPhoneNumbersOnly)
+		} else {
+			handoffMsgLead = fmt.Sprintf("¡Excelente! Te transferiré con %s, nuestro especialista comercial.\n\nTe escribirá en breve, o si lo prefieres, puedes contactarle directamente haciendo click aquí: https://wa.me/%s", kamCleanName, kamPhoneNumbersOnly)
+		}
 		if err := sendWhatsAppMessage(lead.Phone, handoffMsgLead, "sdr-"+companyID); err != nil {
 			log.Printf("Error notificando al Lead del handoff: %v", err)
 			// No bloqueamos el éxito del KAM si falla el mensaje al Lead
@@ -1171,7 +1188,7 @@ func main() {
 		// Actualizar el estado del lead en la base de datos
 		DB.Model(&lead).Updates(map[string]interface{}{
 			"status":       "HANDOFF",
-			"assigned_kam": req.KamName,
+			"assigned_kam": kamCleanName,
 		})
 
 		jsonOK(w, map[string]interface{}{
@@ -1838,10 +1855,11 @@ func main() {
 			return
 		}
 
+		cleanKamName := strings.TrimSpace(req.Name)
 		hashed, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 		user := User{
 			Email:            req.Email,
-			Name:             req.Name,
+			Name:             cleanKamName,
 			Password:         string(hashed),
 			Role:             "EXECUTIVE",
 			CompanyID:        req.CompanyID,
@@ -1855,7 +1873,7 @@ func main() {
 		inviteCode := generateInviteCode()
 		kam := KAM{
 			CompanyID:    req.CompanyID,
-			Name:         req.Name,
+			Name:         cleanKamName,
 			Role:         req.Role,
 			Phone:        req.Phone,
 			Email:        req.Email,
@@ -1876,7 +1894,7 @@ func main() {
 		}
 
 		if kam.Phone != "" {
-			inviteMsg := fmt.Sprintf("🔑 *Nodepath Command Center — Invitación a Equipo*\n\nHola %s, has sido registrado como Ejecutivo Comercial en %s.\n\nTu código de acceso exclusivo es:\n👉 *%s*\n\nIngresa en https://os.nodepath.com e introduce este código para acceder a tu bandeja de leads asignados.", kam.Name, companyName, kam.InviteCode)
+			inviteMsg := fmt.Sprintf("🔑 *Nodepath Command Center — Invitación a Equipo*\n\nHola %s, has sido registrado como Ejecutivo Comercial en %s.\n\nIngresa con tu correo en https://os.nodepath.com para acceder a tu bandeja de leads asignados.\n\n(Tu código de referencia de equipo es: *%s*)", kam.Name, companyName, kam.InviteCode)
 			sendWhatsAppMessage(kam.Phone, inviteMsg, "sdr-"+kam.CompanyID)
 		}
 
@@ -1884,10 +1902,14 @@ func main() {
 	}))
 
 	mux.HandleFunc("/api/kams/me/leads", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		kamName := r.URL.Query().Get("kam_name")
+		kamName := strings.TrimSpace(r.URL.Query().Get("kam_name"))
 		companyID := getCompanyID(r)
 		var leads []Lead
-		DB.Where("company_id = ? AND assigned_kam = ?", companyID, kamName).Find(&leads)
+		if kamName != "" {
+			DB.Where("company_id = ? AND (TRIM(assigned_kam) = ? OR LOWER(TRIM(assigned_kam)) = LOWER(?))", companyID, kamName, kamName).Find(&leads)
+		} else {
+			DB.Where("company_id = ? AND assigned_kam != '' AND assigned_kam IS NOT NULL", companyID).Find(&leads)
+		}
 		jsonOK(w, leads)
 	}))
 
@@ -2016,13 +2038,14 @@ func autoAssignLeadToKAM(lead *Lead, companyID string, brief string, action stri
 	minCount := int64(999999)
 	for _, k := range kams {
 		var count int64
-		DB.Model(&Lead{}).Where("company_id = ? AND assigned_kam = ? AND status IN ('HANDOFF', 'POR_AGENDAR')", companyID, k.Name).Count(&count)
+		DB.Model(&Lead{}).Where("company_id = ? AND (TRIM(assigned_kam) = ? OR LOWER(TRIM(assigned_kam)) = LOWER(?)) AND status IN ('HANDOFF', 'POR_AGENDAR')", companyID, strings.TrimSpace(k.Name), strings.TrimSpace(k.Name)).Count(&count)
 		if count < minCount {
 			minCount = count
 			bestKam = k
 		}
 	}
 
+	bestKamName := strings.TrimSpace(bestKam.Name)
 	phoneNumbersOnly := strings.Map(func(r rune) rune {
 		if r >= '0' && r <= '9' {
 			return r
@@ -2048,19 +2071,19 @@ func autoAssignLeadToKAM(lead *Lead, companyID string, brief string, action stri
 
 	if bestKam.Phone != "" {
 		if err := sendWhatsAppMessage(bestKam.Phone, handoffMsgKam, "sdr-"+companyID); err != nil {
-			log.Printf("⚠️ Error enviando WhatsApp automático a KAM %s: %v", bestKam.Name, err)
+			log.Printf("⚠️ Error enviando WhatsApp automático a KAM %s: %v", bestKamName, err)
 		} else {
-			log.Printf("✅ WhatsApp de auto-asignación enviado a KAM %s (%s)", bestKam.Name, bestKam.Phone)
+			log.Printf("✅ WhatsApp de auto-asignación enviado a KAM %s (%s)", bestKamName, bestKam.Phone)
 		}
 	}
 
 	// Actualizar lead a estado HANDOFF con el KAM asignado
 	DB.Model(lead).Updates(map[string]interface{}{
 		"status":       "HANDOFF",
-		"assigned_kam": bestKam.Name,
+		"assigned_kam": bestKamName,
 	})
 
-	return true, bestKam.Name
+	return true, bestKamName
 }
 
 // autoAssignPendingLeads busca todos los leads pendientes por agendar sin asignar y los asigna automáticamente
