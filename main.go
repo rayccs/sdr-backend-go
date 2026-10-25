@@ -196,8 +196,18 @@ func sendWhatsAppMessage(phone, message, instanceName string) error {
 		return nil
 	}
 
-	// Normalizar teléfono: quitar + y espacios
-	cleanPhone := strings.ReplaceAll(strings.ReplaceAll(phone, "+", ""), " ", "")
+	// Normalizar teléfono: quitar +, espacios y caracteres no numéricos
+	cleanPhone := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, phone)
+
+	// Si es número móvil chileno sin código de país (9 dígitos comenzando con 9), anteponer prefijo 56
+	if len(cleanPhone) == 9 && strings.HasPrefix(cleanPhone, "9") {
+		cleanPhone = "56" + cleanPhone
+	}
 
 	payload := map[string]interface{}{
 		"number":  cleanPhone + "@s.whatsapp.net",
