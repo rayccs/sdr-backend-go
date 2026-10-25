@@ -2077,9 +2077,8 @@ func autoAssignLeadToKAM(lead *Lead, companyID string, brief string, action stri
 		}
 	}
 
-	// Actualizar lead a estado HANDOFF con el KAM asignado
+	// Asignar el KAM al lead sin forzar HANDOFF para permitir que el agente continúe respondiendo y agendando en Google Calendar
 	DB.Model(lead).Updates(map[string]interface{}{
-		"status":       "HANDOFF",
 		"assigned_kam": bestKamName,
 	})
 
